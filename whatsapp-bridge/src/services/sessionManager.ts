@@ -1,4 +1,3 @@
-import path from 'path';
 import qrcode from 'qrcode-terminal';
 import type { Logger } from 'pino';
 import { Client, LocalAuth } from 'whatsapp-web.js';
@@ -21,6 +20,7 @@ export class SessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
 
   constructor(
+    private readonly sessionDataPath: string,
     private readonly accounts: BridgeAccountConfig[],
     private readonly messageHandler: MessageHandler,
     private readonly accountControlService: AccountControlService,
@@ -71,7 +71,7 @@ export class SessionManager {
     const client = new Client({
       authStrategy: new LocalAuth({
         clientId: account.id,
-        dataPath: path.resolve(process.cwd(), 'src/sessions'),
+        dataPath: this.sessionDataPath,
       }),
       puppeteer: {
         headless: true,

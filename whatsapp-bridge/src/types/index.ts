@@ -19,6 +19,7 @@ export interface BridgeConfig {
   nodeEnv: string;
   logLevel: string;
   healthPort: number;
+  sessionDataPath: string;
   bridgeMode: BridgeMode;
   destinationWhatsAppId: string | null;
   maxFileSizeBytes: number;

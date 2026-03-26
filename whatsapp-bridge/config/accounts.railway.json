@@ -1,0 +1,12 @@
+[
+  {
+    "id": "legacy-1",
+    "displayName": "Legacy Account 1",
+    "enabled": true,
+    "owner": "Operations",
+    "rolloutWave": "pilot",
+    "notes": "Railway-hosted single-account pilot forwarding inbound CVs to the Falisha Meta intake number.",
+    "allowedSenders": [],
+    "blockedSenders": []
+  }
+]

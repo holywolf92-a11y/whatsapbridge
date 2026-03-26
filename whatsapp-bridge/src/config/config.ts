@@ -12,6 +12,7 @@ const envSchema = z.object({
   NODE_ENV: z.string().default('development'),
   LOG_LEVEL: z.string().default('info'),
   HEALTH_PORT: z.coerce.number().int().positive().default(defaultHealthPort),
+  SESSION_DATA_PATH: z.string().default('./data/sessions'),
   BRIDGE_MODE: z.enum(['meta-forward', 'backend-upload']).default('meta-forward'),
   API_WHATSAPP_NUMBER: z.string().optional(),
   MAX_FILE_SIZE_MB: z.coerce.number().positive().default(10),
@@ -88,9 +89,11 @@ export function loadConfig(): BridgeConfig {
   const bridgeMode = env.BRIDGE_MODE as BridgeMode;
   const dedupeStorePath = resolveStorePath(env.DEDUP_STORE_PATH);
   const accountControlPath = resolveStorePath(env.ACCOUNT_CONTROL_PATH);
+  const sessionDataPath = resolveStorePath(env.SESSION_DATA_PATH);
 
   ensureParentDirectory(dedupeStorePath);
   ensureParentDirectory(accountControlPath);
+  fs.mkdirSync(sessionDataPath, { recursive: true });
 
   if (bridgeMode === 'meta-forward' && !env.API_WHATSAPP_NUMBER) {
     throw new Error('API_WHATSAPP_NUMBER is required when BRIDGE_MODE=meta-forward');
@@ -104,6 +107,7 @@ export function loadConfig(): BridgeConfig {
     nodeEnv: env.NODE_ENV,
     logLevel: env.LOG_LEVEL,
     healthPort: env.HEALTH_PORT,
+    sessionDataPath,
     bridgeMode,
     destinationWhatsAppId: env.API_WHATSAPP_NUMBER ?? null,
     maxFileSizeBytes: Math.round(env.MAX_FILE_SIZE_MB * 1024 * 1024),

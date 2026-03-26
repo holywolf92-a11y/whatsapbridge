@@ -18,7 +18,7 @@ async function main(): Promise<void> {
   const deliveryService = new DeliveryService(config, logger);
   const mediaHandler = new MediaHandler(config, dedupeService, deliveryService, logger);
   const messageHandler = new MessageHandler(mediaHandler, logger);
-  const sessionManager = new SessionManager(config.accounts, messageHandler, accountControlService, logger);
+  const sessionManager = new SessionManager(config.sessionDataPath, config.accounts, messageHandler, accountControlService, logger);
 
   const server = http.createServer(async (req, res) => {
     if (!req.url) {
