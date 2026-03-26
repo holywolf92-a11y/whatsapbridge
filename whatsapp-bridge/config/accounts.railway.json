@@ -1,11 +1,41 @@
 [
   {
-    "id": "legacy-1",
-    "displayName": "Legacy Account 1",
+    "id": "whatsapp1",
+    "displayName": "WhatsApp 1",
     "enabled": true,
     "owner": "Operations",
-    "rolloutWave": "pilot",
-    "notes": "Railway-hosted single-account pilot forwarding inbound CVs to the Falisha Meta intake number.",
+    "rolloutWave": "production",
+    "notes": "Primary WhatsApp bridge slot for operations traffic.",
+    "allowedSenders": [],
+    "blockedSenders": []
+  },
+  {
+    "id": "whatsapp2",
+    "displayName": "WhatsApp 2",
+    "enabled": true,
+    "owner": "Operations",
+    "rolloutWave": "production",
+    "notes": "Secondary WhatsApp bridge slot for operations traffic.",
+    "allowedSenders": [],
+    "blockedSenders": []
+  },
+  {
+    "id": "whatsapp3",
+    "displayName": "WhatsApp 3",
+    "enabled": true,
+    "owner": "Operations",
+    "rolloutWave": "production",
+    "notes": "Third WhatsApp bridge slot for operations traffic.",
+    "allowedSenders": [],
+    "blockedSenders": []
+  },
+  {
+    "id": "whatsapp4",
+    "displayName": "WhatsApp 4",
+    "enabled": true,
+    "owner": "Operations",
+    "rolloutWave": "production",
+    "notes": "Fourth WhatsApp bridge slot for operations traffic.",
     "allowedSenders": [],
     "blockedSenders": []
   }

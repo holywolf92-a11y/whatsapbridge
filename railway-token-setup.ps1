@@ -1,17 +1,14 @@
-# Railway Token Setup Script
-# This script sets up your Railway project token for use with Railway CLI
+# Railway CLI Auth Helper
+# Avoid storing Railway tokens in source-controlled scripts.
 
-# Set your Railway project token
-$env:RAILWAY_TOKEN = "fe4c6bd4-c216-480e-8bf3-3a721abe9780"
+Remove-Item Env:RAILWAY_TOKEN -ErrorAction SilentlyContinue
 
-# Display status
-Write-Host "Railway Project Token configured!" -ForegroundColor Green
-Write-Host "Token: $env:RAILWAY_TOKEN" -ForegroundColor Cyan
+Write-Host "Removed any session RAILWAY_TOKEN override." -ForegroundColor Green
+Write-Host "Authenticate with: railway login" -ForegroundColor Yellow
+Write-Host "Expected account: falishamanpower4035@gmail.com" -ForegroundColor Cyan
+Write-Host "Project: glorious-flexibility" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "You can now use Railway CLI commands with this token." -ForegroundColor Yellow
 Write-Host "Example commands:" -ForegroundColor Yellow
 Write-Host "  railway status" -ForegroundColor White
-Write-Host "  railway up" -ForegroundColor White
-Write-Host "  railway logs" -ForegroundColor White
-Write-Host ""
-Write-Host "Note: You may need to authenticate first with 'railway login' if you haven't already." -ForegroundColor Yellow
+Write-Host "  railway service status" -ForegroundColor White
+Write-Host "  railway service logs --lines 50" -ForegroundColor White

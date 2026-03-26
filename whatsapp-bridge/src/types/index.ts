@@ -1,7 +1,7 @@
 import type { Client, Message, MessageMedia } from 'whatsapp-web.js';
 
 export type BridgeMode = 'meta-forward' | 'backend-upload';
-export type SessionStatus = 'needs_qr' | 'connecting' | 'connected' | 'degraded' | 'paused';
+export type SessionStatus = 'idle' | 'needs_qr' | 'connecting' | 'connected' | 'degraded' | 'paused';
 export type DetectionVerdict = 'likely_cv' | 'possible_cv' | 'not_cv';
 
 export interface BridgeAccountConfig {
@@ -76,4 +76,6 @@ export interface ManagedSession {
   lastEventAt: string | null;
   lastError: string | null;
   qrCode: string | null;
+  pairingCode: string | null;
+  pairingCodeGeneratedAt: string | null;
 }

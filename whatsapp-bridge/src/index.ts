@@ -10,6 +10,20 @@ import { MessageHandler } from './handlers/messageHandler';
 import { SessionManager } from './services/sessionManager';
 import { AccountControlService } from './services/accountControlService';
 
+async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  if (chunks.length === 0) {
+    return {};
+  }
+
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger(config.logLevel);
@@ -65,6 +79,40 @@ async function main(): Promise<void> {
 
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true, accountId, qrCode, qrImageDataUrl }));
+      return;
+    }
+
+    const pairingCodeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/pairing-code$/);
+    if (pairingCodeMatch && req.method === 'POST') {
+      try {
+        const accountId = decodeURIComponent(pairingCodeMatch[1]);
+        const body = await readJsonBody(req);
+        const phoneNumber = typeof body.phoneNumber === 'string' ? body.phoneNumber : '';
+        const result = await sessionManager.requestPairingCode(accountId, phoneNumber);
+
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, ...result }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'pairing_code_failed', message }));
+      }
+      return;
+    }
+
+    const connectMatch = url.pathname.match(/^\/sessions\/([^/]+)\/connect$/);
+    if (connectMatch && req.method === 'POST') {
+      try {
+        const accountId = decodeURIComponent(connectMatch[1]);
+        await sessionManager.connectAccount(accountId);
+
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, accountId }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'connect_failed', message }));
+      }
       return;
     }
 

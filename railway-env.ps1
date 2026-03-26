@@ -1,8 +1,8 @@
 # Railway Environment Configuration
-# This file sets up your Railway project token automatically
+# Use Railway browser login instead of storing long-lived tokens in scripts.
 
-# Set Railway Project Token
-$env:RAILWAY_TOKEN = "fe4c6bd4-c216-480e-8bf3-3a721abe9780"
+Remove-Item Env:RAILWAY_TOKEN -ErrorAction SilentlyContinue
 
-# Display confirmation
-Write-Host "Railway Project Token loaded" -ForegroundColor Green
+Write-Host "Cleared any session RAILWAY_TOKEN override." -ForegroundColor Green
+Write-Host "Use 'railway login' to authenticate with the Falisha Manpower account." -ForegroundColor Yellow
+Write-Host "Current Railway project: glorious-flexibility" -ForegroundColor Cyan
