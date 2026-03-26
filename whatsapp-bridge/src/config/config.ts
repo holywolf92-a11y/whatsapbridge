@@ -85,6 +85,7 @@ function ensureParentDirectory(filePath: string): void {
 
 export function loadConfig(): BridgeConfig {
   const env = envSchema.parse(process.env);
+  const railwayPort = process.env.PORT ? Number(process.env.PORT) : null;
   const accounts = loadAccounts(env);
   const bridgeMode = env.BRIDGE_MODE as BridgeMode;
   const dedupeStorePath = resolveStorePath(env.DEDUP_STORE_PATH);
@@ -106,7 +107,7 @@ export function loadConfig(): BridgeConfig {
   return {
     nodeEnv: env.NODE_ENV,
     logLevel: env.LOG_LEVEL,
-    healthPort: env.HEALTH_PORT,
+    healthPort: railwayPort && Number.isFinite(railwayPort) ? railwayPort : env.HEALTH_PORT,
     sessionDataPath,
     bridgeMode,
     destinationWhatsAppId: env.API_WHATSAPP_NUMBER ?? null,
