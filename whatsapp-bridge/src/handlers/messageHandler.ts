@@ -3,6 +3,17 @@ import type { Client, Message } from 'whatsapp-web.js';
 import type { BridgeAccountConfig } from '../types';
 import { MediaHandler } from './mediaHandler';
 
+function isInboxChatId(chatId: string | undefined): boolean {
+  const normalized = String(chatId || '').trim().toLowerCase();
+  if (!normalized) return false;
+
+  if (normalized.endsWith('@broadcast')) return false;
+  if (normalized.endsWith('@g.us')) return false;
+  if (normalized.endsWith('@newsletter')) return false;
+
+  return true;
+}
+
 export class MessageHandler {
   constructor(
     private readonly mediaHandler: MediaHandler,
@@ -11,6 +22,15 @@ export class MessageHandler {
 
   async handle(account: BridgeAccountConfig, client: Client, message: Message): Promise<void> {
     if (message.fromMe) {
+      return;
+    }
+
+    if (!isInboxChatId(message.from)) {
+      this.logger.info({
+        accountId: account.id,
+        messageId: message.id._serialized,
+        from: message.from,
+      }, 'Skipped non-inbox WhatsApp message');
       return;
     }
 
