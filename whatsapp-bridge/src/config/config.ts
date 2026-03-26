@@ -6,10 +6,12 @@ import type { BridgeAccountConfig, BridgeConfig, BridgeMode } from '../types';
 
 dotenv.config();
 
+const defaultHealthPort = process.env.PORT ? Number(process.env.PORT) : 4310;
+
 const envSchema = z.object({
   NODE_ENV: z.string().default('development'),
   LOG_LEVEL: z.string().default('info'),
-  HEALTH_PORT: z.coerce.number().int().positive().default(4310),
+  HEALTH_PORT: z.coerce.number().int().positive().default(defaultHealthPort),
   BRIDGE_MODE: z.enum(['meta-forward', 'backend-upload']).default('meta-forward'),
   API_WHATSAPP_NUMBER: z.string().optional(),
   MAX_FILE_SIZE_MB: z.coerce.number().positive().default(10),
