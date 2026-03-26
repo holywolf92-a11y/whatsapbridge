@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+data/
+config/accounts.pilot.json
+src/sessions/
+src/sessions/.wwebjs_auth/
+src/sessions/.wwebjs_cache/
+logs/
