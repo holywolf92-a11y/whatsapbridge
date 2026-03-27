@@ -1,4 +1,6 @@
 import qrcode from 'qrcode-terminal';
+import fs from 'fs';
+import path from 'path';
 import type { Logger } from 'pino';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import type { BridgeAccountConfig, ManagedSession, SessionStatus } from '../types';
@@ -219,6 +221,14 @@ export class SessionManager {
   }
 
   private async createClient(account: BridgeAccountConfig): Promise<void> {
+    // Remove stale Chromium singleton lock files left on the volume after container
+    // restarts — without this, Chromium refuses to start with Code 21 "profile in use".
+    const profileDir = path.join(this.sessionDataPath, `session-${account.id}`);
+    for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+      const lockPath = path.join(profileDir, lockFile);
+      try { fs.unlinkSync(lockPath); } catch { /* doesn't exist — fine */ }
+    }
+
     const client = new Client({
       authStrategy: new LocalAuth({
         clientId: account.id,
