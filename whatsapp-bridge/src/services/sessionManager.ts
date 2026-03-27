@@ -248,8 +248,6 @@ export class SessionManager {
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-gpu',
-          '--no-zygote',
-          '--single-process',
           '--disable-extensions',
           '--disable-background-networking',
           '--disable-default-apps',
@@ -260,7 +258,6 @@ export class SessionManager {
           '--mute-audio',
           '--no-first-run',
           '--safebrowsing-disable-auto-update',
-          '--js-flags=--max-old-space-size=256',
         ],
       },
     });
@@ -278,7 +275,13 @@ export class SessionManager {
 
     this.sessions.set(account.id, session);
     this.bindEvents(session);
-    await client.initialize();
+    try {
+      await client.initialize();
+    } catch (error) {
+      this.logger.error({ accountId: account.id, error }, 'Chromium initialization failed — session left in degraded state');
+      session.status = 'degraded';
+      session.lastError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   private bindEvents(session: ManagedSession): void {
