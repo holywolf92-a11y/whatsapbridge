@@ -2,10 +2,11 @@ import qrcode from 'qrcode-terminal';
 import fs from 'fs';
 import path from 'path';
 import type { Logger } from 'pino';
-import { Client, LocalAuth } from 'whatsapp-web.js';
+import { Client, RemoteAuth } from 'whatsapp-web.js';
 import type { BridgeAccountConfig, ManagedSession, SessionStatus } from '../types';
 import { MessageHandler } from '../handlers/messageHandler';
 import { AccountControlService } from './accountControlService';
+import { VolumeSessionStore } from './volumeSessionStore';
 
 type SessionSnapshot = {
   accountId: string;
@@ -25,6 +26,7 @@ export class SessionManager {
   private readonly reconnectTimers = new Map<string, NodeJS.Timeout>();
   private readonly reconnectingAccounts = new Set<string>();
   private isShuttingDown = false;
+  private readonly store: VolumeSessionStore;
 
   constructor(
     private readonly sessionDataPath: string,
@@ -32,7 +34,11 @@ export class SessionManager {
     private readonly messageHandler: MessageHandler,
     private readonly accountControlService: AccountControlService,
     private readonly logger: Logger,
-  ) {}
+  ) {
+    // Session backups live in a sub-folder of the Railway volume so they
+    // survive container restarts without lock-file conflicts.
+    this.store = new VolumeSessionStore(path.join(sessionDataPath, 'backups'));
+  }
 
   async start(): Promise<void> {
     for (const account of this.accounts) {
@@ -62,11 +68,10 @@ export class SessionManager {
         pairingCodeGeneratedAt: null,
       });
 
-      // Only auto-connect if a saved session exists on disk. Accounts that have
-      // never been QR-scanned have no profile directory and must stay idle until
-      // the user manually clicks Connect and scans a QR code.
-      const profileDir = path.join(this.sessionDataPath, `session-${account.id}`);
-      const hasSavedSession = fs.existsSync(profileDir);
+      // Auto-connect only if we have a stored backup zip for this account.
+      // Accounts never QR-scanned have no backup and stay idle until the user
+      // manually clicks Connect and scans a QR code.
+      const hasSavedSession = this.store.hasBackup(account.id);
       if (!hasSavedSession) continue;
 
       // Stagger starts so Chromium instances don't all compete for RAM at once.
@@ -228,18 +233,13 @@ export class SessionManager {
   }
 
   private async createClient(account: BridgeAccountConfig): Promise<void> {
-    // Remove stale Chromium singleton lock files left on the volume after container
-    // restarts — without this, Chromium refuses to start with Code 21 "profile in use".
-    const profileDir = path.join(this.sessionDataPath, `session-${account.id}`);
-    for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
-      const lockPath = path.join(profileDir, lockFile);
-      try { fs.unlinkSync(lockPath); } catch { /* doesn't exist — fine */ }
-    }
-
     const client = new Client({
-      authStrategy: new LocalAuth({
+      authStrategy: new RemoteAuth({
         clientId: account.id,
         dataPath: this.sessionDataPath,
+        store: this.store,
+        // Back up the session every 5 minutes while connected.
+        backupSyncIntervalMs: 5 * 60 * 1000,
       }),
       puppeteer: {
         headless: true,
@@ -278,15 +278,10 @@ export class SessionManager {
     try {
       await client.initialize();
     } catch (error) {
-      this.logger.error({ accountId: account.id, error }, 'Chromium initialization failed — wiping stale session and resetting to idle');
-      // Destroy the crashed client
+      this.logger.error({ accountId: account.id, error }, 'Chromium initialization failed — resetting to idle');
       try { await client.destroy(); } catch { /* ignore */ }
-      // Delete the stale session directory so the next connect attempt starts fresh
-      const profileDir = path.join(this.sessionDataPath, `session-${account.id}`);
-      try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch { /* ignore */ }
-      // Reset to idle so the user can click Connect and get a fresh QR
       session.status = 'idle';
-      session.lastError = 'Session was invalidated — please reconnect and scan the QR code.';
+      session.lastError = 'Session initialisation failed. Click Connect to try again.';
     }
   }
 
