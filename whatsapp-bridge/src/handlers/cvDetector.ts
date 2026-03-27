@@ -3,7 +3,7 @@ import type { Message, MessageMedia } from 'whatsapp-web.js';
 import type { BridgeConfig, DetectionResult } from '../types';
 
 const KEYWORDS = ['cv', 'resume', 'biodata', 'curriculum', 'vitae'];
-const DOCUMENT_EXTENSIONS = new Set(['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png']);
+const DOCUMENT_EXTENSIONS = new Set(['.pdf', '.doc', '.docx']);
 
 export function classifyMedia(
   media: MessageMedia,
@@ -31,10 +31,6 @@ export function classifyMedia(
 
   if (KEYWORDS.some((keyword) => body.includes(keyword))) {
     reasons.push('message_keyword');
-  }
-
-  if (mimeType.startsWith('image/')) {
-    reasons.push('image_upload');
   }
 
   const verdict =
