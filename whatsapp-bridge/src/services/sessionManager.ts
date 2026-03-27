@@ -62,9 +62,16 @@ export class SessionManager {
         pairingCodeGeneratedAt: null,
       });
 
-      // Auto-connect enabled accounts one at a time with a stagger delay so
-      // Chromium instances don't all compete for RAM at the same moment.
-      const index = this.accounts.filter(a => a.enabled).indexOf(account);
+      // Only auto-connect if a saved session exists on disk. Accounts that have
+      // never been QR-scanned have no profile directory and must stay idle until
+      // the user manually clicks Connect and scans a QR code.
+      const profileDir = path.join(this.sessionDataPath, `session-${account.id}`);
+      const hasSavedSession = fs.existsSync(profileDir);
+      if (!hasSavedSession) continue;
+
+      // Stagger starts so Chromium instances don't all compete for RAM at once.
+      const enabledAccounts = this.accounts.filter(a => a.enabled);
+      const index = enabledAccounts.indexOf(account);
       setTimeout(() => {
         void this.createClient(account);
       }, index * 8000);
