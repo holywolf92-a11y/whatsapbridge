@@ -278,9 +278,15 @@ export class SessionManager {
     try {
       await client.initialize();
     } catch (error) {
-      this.logger.error({ accountId: account.id, error }, 'Chromium initialization failed — session left in degraded state');
-      session.status = 'degraded';
-      session.lastError = error instanceof Error ? error.message : String(error);
+      this.logger.error({ accountId: account.id, error }, 'Chromium initialization failed — wiping stale session and resetting to idle');
+      // Destroy the crashed client
+      try { await client.destroy(); } catch { /* ignore */ }
+      // Delete the stale session directory so the next connect attempt starts fresh
+      const profileDir = path.join(this.sessionDataPath, `session-${account.id}`);
+      try { fs.rmSync(profileDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      // Reset to idle so the user can click Connect and get a fresh QR
+      session.status = 'idle';
+      session.lastError = 'Session was invalidated — please reconnect and scan the QR code.';
     }
   }
 
