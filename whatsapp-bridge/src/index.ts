@@ -151,6 +151,17 @@ async function main(): Promise<void> {
 
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
+
+  // ── Enterprise safety net ─────────────────────────────────────────────────
+  // RemoteAuth's 5-minute backup timer can throw ENOENT (Chrome "Default" dir
+  // not yet present) inside an async setInterval callback.  Without these
+  // handlers Node 15+ exits on any unhandled rejection, killing ALL sessions.
+  process.on('unhandledRejection', (reason: unknown) => {
+    logger.error({ reason }, 'Unhandled promise rejection — process kept alive');
+  });
+  process.on('uncaughtException', (error: Error) => {
+    logger.error({ error: error.message, stack: error.stack }, 'Uncaught exception — process kept alive');
+  });
 }
 
 main().catch((error) => {

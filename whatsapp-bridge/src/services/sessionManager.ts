@@ -8,6 +8,26 @@ import { MessageHandler } from '../handlers/messageHandler';
 import { AccountControlService } from './accountControlService';
 import { VolumeSessionStore } from './volumeSessionStore';
 
+/**
+ * SafeRemoteAuth wraps every backup-timer call in a try/catch so a missing
+ * Chrome "Default" directory (ENOENT) cannot bubble up as an unhandled
+ * rejection and crash the process — taking ALL sessions down with it.
+ */
+class SafeRemoteAuth extends RemoteAuth {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async storeRemoteSession(options?: any): Promise<void> {
+    try {
+      // storeRemoteSession is defined in the JS base class but not in the TS types;
+      // access it via the prototype to satisfy the TypeScript compiler.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const parentFn = (RemoteAuth.prototype as any).storeRemoteSession as (opts?: any) => Promise<void>;
+      await parentFn.call(this, options);
+    } catch {
+      // Non-fatal: backup silently skipped; will retry at next interval.
+    }
+  }
+}
+
 type SessionSnapshot = {
   accountId: string;
   displayName: string;
@@ -27,6 +47,7 @@ export class SessionManager {
   private readonly reconnectingAccounts = new Set<string>();
   private isShuttingDown = false;
   private readonly store: VolumeSessionStore;
+  private watchdogTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly sessionDataPath: string,
@@ -81,6 +102,13 @@ export class SessionManager {
         void this.createClient(account);
       }, index * 8000);
     }
+
+    // Watchdog: every 2 minutes verify every enabled, non-idle session is
+    // alive and re-connect anything that slipped to degraded/disconnected
+    // without triggering the normal reconnect path (e.g. silent process hang).
+    this.watchdogTimer = setInterval(() => {
+      void this.runWatchdog();
+    }, 2 * 60 * 1000);
   }
 
   async connectAccount(accountId: string): Promise<void> {
@@ -223,6 +251,10 @@ export class SessionManager {
 
   async shutdown(): Promise<void> {
     this.isShuttingDown = true;
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
     for (const timer of this.reconnectTimers.values()) {
       clearTimeout(timer);
     }
@@ -232,9 +264,33 @@ export class SessionManager {
     await Promise.all(activeSessions.map((session) => session.client.destroy()));
   }
 
+  /**
+   * Watchdog: runs every 2 minutes.  Any session that is enabled but stuck in
+   * "degraded" (and has no reconnect already scheduled) gets kicked into the
+   * reconnect pipeline.  This recovers accounts that go silent without firing
+   * the "disconnected" event (e.g. Railway container network blip).
+   */
+  private async runWatchdog(): Promise<void> {
+    if (this.isShuttingDown) return;
+    for (const session of this.sessions.values()) {
+      const { id } = session.account;
+      if (
+        !session.account.enabled ||
+        this.accountControlService.isPaused(id) ||
+        this.reconnectingAccounts.has(id) ||
+        this.reconnectTimers.has(id)
+      ) continue;
+
+      if (session.status === 'degraded') {
+        this.logger.warn({ accountId: id }, 'Watchdog detected degraded session — scheduling reconnect');
+        this.scheduleReconnect(id);
+      }
+    }
+  }
+
   private async createClient(account: BridgeAccountConfig): Promise<void> {
     const client = new Client({
-      authStrategy: new RemoteAuth({
+      authStrategy: new SafeRemoteAuth({
         clientId: account.id,
         dataPath: this.sessionDataPath,
         store: this.store,
