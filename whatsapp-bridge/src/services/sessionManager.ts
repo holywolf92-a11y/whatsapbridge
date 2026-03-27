@@ -1,5 +1,3 @@
-import fs from 'fs';
-import path from 'path';
 import qrcode from 'qrcode-terminal';
 import type { Logger } from 'pino';
 import { Client, LocalAuth } from 'whatsapp-web.js';
@@ -50,23 +48,19 @@ export class SessionManager {
         continue;
       }
 
-      // Auto-restore only if a saved session directory exists on disk.
-      // Accounts without saved sessions start as 'idle' and wait for an explicit connect call.
-      const savedSessionPath = path.join(this.sessionDataPath, `session-${account.id}`);
-      if (fs.existsSync(savedSessionPath)) {
-        await this.createClient(account);
-      } else {
-        this.sessions.set(account.id, {
-          account,
-          client: {} as Client,
-          status: 'idle',
-          lastEventAt: new Date().toISOString(),
-          lastError: null,
-          qrCode: null,
-          pairingCode: null,
-          pairingCodeGeneratedAt: null,
-        });
-      }
+      // Always start enabled accounts as 'idle' so they never auto-generate QR
+      // codes on service startup. Clicking Connect in the UI calls connectAccount()
+      // which will either restore a saved session silently or prompt for a QR/code.
+      this.sessions.set(account.id, {
+        account,
+        client: {} as Client,
+        status: 'idle',
+        lastEventAt: new Date().toISOString(),
+        lastError: null,
+        qrCode: null,
+        pairingCode: null,
+        pairingCodeGeneratedAt: null,
+      });
     }
   }
 
@@ -84,6 +78,21 @@ export class SessionManager {
     if (!account.enabled) {
       throw new Error(`Account is disabled: ${accountId}`);
     }
+
+    await this.createClient(account);
+  }
+
+  async forceRestartAccount(accountId: string): Promise<void> {
+    const existing = this.sessions.get(accountId);
+    if (existing?.client && typeof (existing.client as any).destroy === 'function') {
+      try { await (existing.client as any).destroy(); } catch { /* ignore */ }
+    }
+    this.sessions.delete(accountId);
+    this.clearReconnect(accountId);
+
+    const account = this.accounts.find((a) => a.id === accountId);
+    if (!account) throw new Error(`Unknown account: ${accountId}`);
+    if (!account.enabled) throw new Error(`Account is disabled: ${accountId}`);
 
     await this.createClient(account);
   }

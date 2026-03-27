@@ -116,6 +116,22 @@ async function main(): Promise<void> {
       return;
     }
 
+    const restartMatch = url.pathname.match(/^\/sessions\/([^/]+)\/restart$/);
+    if (restartMatch && req.method === 'POST') {
+      try {
+        const accountId = decodeURIComponent(restartMatch[1]);
+        await sessionManager.forceRestartAccount(accountId);
+
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, accountId }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'restart_failed', message }));
+      }
+      return;
+    }
+
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: false, error: 'not_found' }));
   });
