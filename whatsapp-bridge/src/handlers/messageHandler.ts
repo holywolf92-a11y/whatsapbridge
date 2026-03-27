@@ -8,7 +8,6 @@ function isInboxChatId(chatId: string | undefined): boolean {
   if (!normalized) return false;
 
   if (normalized.endsWith('@broadcast')) return false;
-  if (normalized.endsWith('@g.us')) return false;
   if (normalized.endsWith('@newsletter')) return false;
 
   return true;
