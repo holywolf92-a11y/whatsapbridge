@@ -26,7 +26,9 @@ export class MessageHandler {
     }
 
     if (!isInboxChatId(message.from)) {
-      this.logger.info({
+      // Keep at debug level — non-inbox messages (groups, broadcasts) are very
+      // frequent and logging them at info floods the container at scale.
+      this.logger.debug({
         accountId: account.id,
         messageId: message.id._serialized,
         from: message.from,

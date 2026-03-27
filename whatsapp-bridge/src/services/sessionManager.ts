@@ -312,6 +312,10 @@ export class SessionManager {
     });
 
     session.client.on('message', async (message) => {
+      // Drop WhatsApp Status updates (status@broadcast) immediately — they are
+      // not real messages and flood the event loop at hundreds per second.
+      if (message.from === 'status@broadcast') return;
+
       try {
         if (this.accountControlService.isPaused(session.account.id)) {
           updateStatus('paused');
