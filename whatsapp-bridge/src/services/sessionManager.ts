@@ -48,9 +48,7 @@ export class SessionManager {
         continue;
       }
 
-      // Always start enabled accounts as 'idle' so they never auto-generate QR
-      // codes on service startup. Clicking Connect in the UI calls connectAccount()
-      // which will either restore a saved session silently or prompt for a QR/code.
+      // Seed session as idle first so snapshot() is valid immediately.
       this.sessions.set(account.id, {
         account,
         client: {} as Client,
@@ -61,12 +59,20 @@ export class SessionManager {
         pairingCode: null,
         pairingCodeGeneratedAt: null,
       });
+
+      // Auto-connect enabled accounts one at a time with a stagger delay so
+      // Chromium instances don't all compete for RAM at the same moment.
+      const index = this.accounts.filter(a => a.enabled).indexOf(account);
+      setTimeout(() => {
+        void this.createClient(account);
+      }, index * 8000);
     }
   }
 
   async connectAccount(accountId: string): Promise<void> {
     const existing = this.sessions.get(accountId);
-    if (existing?.status === 'connecting' || existing?.status === 'connected') {
+    // Only block if fully connected — if stuck in connecting, forceRestart handles it
+    if (existing?.status === 'connected') {
       return;
     }
 
