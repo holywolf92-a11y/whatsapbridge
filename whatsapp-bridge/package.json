@@ -15,7 +15,8 @@
     "check:config": "tsx src/scripts/checkConfig.ts",
     "account:pause": "tsx src/scripts/setAccountPaused.ts pause",
     "account:resume": "tsx src/scripts/setAccountPaused.ts resume",
-    "account:status": "tsx src/scripts/accountControlStatus.ts"
+    "account:status": "tsx src/scripts/accountControlStatus.ts",
+    "backfill:pdf": "tsx src/scripts/backfillPdfHistory.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

@@ -24,6 +24,240 @@ async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, u
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
 }
 
+function renderScanPage(accountId: string, options?: { notice?: string | null; error?: string | null }): string {
+  const escapedAccountId = JSON.stringify(accountId);
+  const notice = options?.notice ? String(options.notice) : '';
+  const error = options?.error ? String(options.error) : '';
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WhatsApp Bridge Scan</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f7fb;
+        --panel: #ffffff;
+        --text: #122033;
+        --muted: #5c6a7c;
+        --accent: #0f8f54;
+        --border: #d8e0eb;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: radial-gradient(circle at top, #ffffff 0%, var(--bg) 58%);
+        color: var(--text);
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      .panel {
+        width: min(100%, 720px);
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        box-shadow: 0 18px 48px rgba(18, 32, 51, 0.08);
+        padding: 28px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+      }
+      p {
+        margin: 0 0 16px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .actions {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 20px;
+      }
+      button, .button-link {
+        border: 0;
+        border-radius: 999px;
+        padding: 12px 18px;
+        font: inherit;
+        cursor: pointer;
+        text-decoration: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .primary {
+        background: var(--accent);
+        color: white;
+      }
+      .secondary {
+        background: #edf2f7;
+        color: var(--text);
+      }
+      .status {
+        padding: 14px 16px;
+        border-radius: 14px;
+        background: #f8fafc;
+        border: 1px solid var(--border);
+        margin-bottom: 20px;
+        white-space: pre-wrap;
+      }
+      .notice {
+        padding: 12px 14px;
+        border-radius: 14px;
+        margin-bottom: 16px;
+        font-size: 14px;
+      }
+      .notice.success {
+        background: #edf9f1;
+        color: #12623f;
+        border: 1px solid #b8e3c7;
+      }
+      .notice.error {
+        background: #fff1f1;
+        color: #9b1c1c;
+        border: 1px solid #f3c2c2;
+      }
+      .qr-wrap {
+        display: grid;
+        place-items: center;
+        min-height: 340px;
+        border: 1px dashed var(--border);
+        border-radius: 18px;
+        background: #fcfdff;
+        overflow: hidden;
+      }
+      .qr-wrap img {
+        width: min(100%, 360px);
+        height: auto;
+        display: block;
+      }
+      .hint {
+        margin-top: 18px;
+        font-size: 14px;
+      }
+      code {
+        background: #eef4f8;
+        padding: 2px 6px;
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="panel">
+      <h1>WhatsApp QR Scan</h1>
+      <p>Open this local page, click connect if needed, and scan the QR with the WhatsApp account you want to link.</p>
+      ${notice ? `<div class="notice success">${notice}</div>` : ''}
+      ${error ? `<div class="notice error">${error}</div>` : ''}
+      <div class="actions">
+        <a id="connectBtn" class="button-link primary" href="/sessions/${accountId}/connect-ui">Start / Refresh QR</a>
+        <button id="statusBtn" class="secondary">Check Status</button>
+      </div>
+      <div id="status" class="status">Waiting to start...</div>
+      <div id="qrWrap" class="qr-wrap">QR code will appear here.</div>
+      <p class="hint">Account: <code>${accountId}</code></p>
+    </main>
+    <script>
+      const accountId = ${escapedAccountId};
+      const statusEl = document.getElementById('status');
+      const qrWrap = document.getElementById('qrWrap');
+      let qrPoll = null;
+      let statusPoll = null;
+
+      function clearPolls() {
+        if (qrPoll) {
+          clearInterval(qrPoll);
+          qrPoll = null;
+        }
+        if (statusPoll) {
+          clearInterval(statusPoll);
+          statusPoll = null;
+        }
+      }
+
+      function setStatus(message) {
+        statusEl.textContent = message;
+      }
+
+      function setQr(imageUrl) {
+        if (!imageUrl) {
+          qrWrap.textContent = 'QR code will appear here.';
+          return;
+        }
+        qrWrap.innerHTML = '<img alt="WhatsApp QR" src="' + imageUrl + '" />';
+      }
+
+      async function fetchStatus() {
+        const response = await fetch('/status');
+        const payload = await response.json();
+        const session = Array.isArray(payload.sessions)
+          ? payload.sessions.find((item) => item.accountId === accountId)
+          : null;
+
+        if (!session) {
+          setStatus('No session found for account ' + accountId);
+          return null;
+        }
+
+        setStatus('Status: ' + session.status + '\nLast event: ' + (session.lastEventAt || 'n/a') + '\nLast error: ' + (session.lastError || 'none'));
+        return session;
+      }
+
+      async function fetchQr() {
+        const qrImageUrl = '/sessions/' + encodeURIComponent(accountId) + '/qr-image?ts=' + Date.now();
+        const response = await fetch(qrImageUrl, { method: 'HEAD' });
+        if (!response.ok) {
+          setQr(null);
+          return false;
+        }
+
+        setQr(qrImageUrl);
+        return true;
+      }
+
+      function startPolling() {
+        clearPolls();
+
+        qrPoll = setInterval(fetchQr, 3000);
+        statusPoll = setInterval(async () => {
+          const session = await fetchStatus();
+          if (!session) {
+            return;
+          }
+
+          if (session.status === 'connected') {
+            clearPolls();
+            setQr(null);
+            setStatus('Connected. QR scan complete.');
+            return;
+          }
+
+          if (session.status === 'idle') {
+            window.location.href = '/sessions/' + encodeURIComponent(accountId) + '/connect-ui';
+          }
+        }, 4000);
+      }
+
+      document.getElementById('statusBtn').addEventListener('click', fetchStatus);
+      void (async () => {
+        const session = await fetchStatus();
+        const hasQr = await fetchQr();
+
+        if (session && session.status === 'idle' && !hasQr) {
+          window.location.href = '/sessions/' + encodeURIComponent(accountId) + '/connect-ui';
+          return;
+        }
+
+        startPolling();
+      })();
+    </script>
+  </body>
+</html>`;
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger(config.logLevel);
@@ -82,6 +316,59 @@ async function main(): Promise<void> {
       return;
     }
 
+    const qrImageMatch = url.pathname.match(/^\/sessions\/([^/]+)\/qr-image$/);
+    if (qrImageMatch) {
+      const accountId = decodeURIComponent(qrImageMatch[1]);
+      const qrCode = sessionManager.getQrCode(accountId);
+
+      if (!qrCode) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('QR not available');
+        return;
+      }
+
+      const qrPng = await QRCode.toBuffer(qrCode, {
+        errorCorrectionLevel: 'M',
+        margin: 2,
+        width: 320,
+      });
+
+      res.writeHead(200, {
+        'content-type': 'image/png',
+        'cache-control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+      });
+      res.end(qrPng);
+      return;
+    }
+
+    const scanMatch = url.pathname.match(/^\/sessions\/([^/]+)\/scan$/);
+    if (scanMatch) {
+      const accountId = decodeURIComponent(scanMatch[1]);
+      const notice = url.searchParams.get('notice');
+      const error = url.searchParams.get('error');
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(renderScanPage(accountId, { notice, error }));
+      return;
+    }
+
+    const connectUiMatch = url.pathname.match(/^\/sessions\/([^/]+)\/connect-ui$/);
+    if (connectUiMatch) {
+      const accountId = decodeURIComponent(connectUiMatch[1]);
+      try {
+        await sessionManager.connectAccount(accountId);
+        res.writeHead(302, {
+          location: `/sessions/${encodeURIComponent(accountId)}/scan?notice=${encodeURIComponent('QR requested. If it expires, click Start / Refresh QR again.')}`,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        res.writeHead(302, {
+          location: `/sessions/${encodeURIComponent(accountId)}/scan?error=${encodeURIComponent(message)}`,
+        });
+      }
+      res.end();
+      return;
+    }
+
     const pairingCodeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/pairing-code$/);
     if (pairingCodeMatch && req.method === 'POST') {
       try {
@@ -128,6 +415,22 @@ async function main(): Promise<void> {
         const message = error instanceof Error ? error.message : String(error);
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: 'restart_failed', message }));
+      }
+      return;
+    }
+
+    const cancelMatch = url.pathname.match(/^\/sessions\/([^/]+)\/cancel$/);
+    if (cancelMatch && req.method === 'POST') {
+      try {
+        const accountId = decodeURIComponent(cancelMatch[1]);
+        await sessionManager.cancelSession(accountId);
+
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, accountId }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'cancel_failed', message }));
       }
       return;
     }

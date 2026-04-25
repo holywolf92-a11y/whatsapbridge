@@ -15,6 +15,12 @@ do {
 
 Write-Host "Found $($atts.Count) unprocessed CV attachments" -ForegroundColor Yellow
 
+if ($atts.Count -gt 100) {
+    Write-Host "⚠️  WARNING: $($atts.Count) attachments will be re-queued (~`$$([math]::Round($atts.Count * 0.03, 2)) estimated OpenAI cost)." -ForegroundColor Yellow
+    Write-Host "   Press Ctrl+C within 5 seconds to cancel..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 5
+}
+
 $ok=0; $err=0; $i=0
 foreach ($att in $atts) {
     $i++

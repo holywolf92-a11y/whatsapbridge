@@ -17,6 +17,10 @@ export class VolumeSessionStore {
     fs.mkdirSync(backupsDir, { recursive: true });
   }
 
+  getBackupPath(clientId: string): string {
+    return path.join(this.backupsDir, `RemoteAuth-${clientId}.zip`);
+  }
+
   async sessionExists({ session }: { session: string }): Promise<boolean> {
     const name = path.basename(session); // strip any leading path if present
     return fs.existsSync(path.join(this.backupsDir, `${name}.zip`));
@@ -45,6 +49,14 @@ export class VolumeSessionStore {
 
   /** Returns true if a backup zip exists for the given whatsapp-web.js clientId. */
   hasBackup(clientId: string): boolean {
-    return fs.existsSync(path.join(this.backupsDir, `RemoteAuth-${clientId}.zip`));
+    return fs.existsSync(this.getBackupPath(clientId));
+  }
+
+  deleteBackup(clientId: string): void {
+    try {
+      fs.unlinkSync(this.getBackupPath(clientId));
+    } catch {
+      // already gone
+    }
   }
 }

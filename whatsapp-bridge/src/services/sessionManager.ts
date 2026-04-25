@@ -41,10 +41,17 @@ type SessionSnapshot = {
   pairingCodeGeneratedAt: string | null;
 };
 
+const MAX_RECONNECT_ATTEMPTS = 10;
+const MAX_QR_ROTATIONS = 10;
+const ACCOUNT_START_STAGGER_MS = 15000;
+const RECONNECT_DELAY_MS = 15000;
+
 export class SessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly reconnectTimers = new Map<string, NodeJS.Timeout>();
   private readonly reconnectingAccounts = new Set<string>();
+  private readonly reconnectAttempts = new Map<string, number>();
+  private readonly qrRotationCounts = new Map<string, number>();
   private isShuttingDown = false;
   private readonly store: VolumeSessionStore;
   private watchdogTimer: NodeJS.Timeout | null = null;
@@ -100,7 +107,7 @@ export class SessionManager {
       const index = enabledAccounts.indexOf(account);
       setTimeout(() => {
         void this.createClient(account);
-      }, index * 8000);
+      }, index * ACCOUNT_START_STAGGER_MS);
     }
 
     // Watchdog: every 2 minutes verify every enabled, non-idle session is
@@ -127,7 +134,37 @@ export class SessionManager {
       throw new Error(`Account is disabled: ${accountId}`);
     }
 
+    const shouldResetPersistedAuth =
+      existing?.status === 'degraded' &&
+      typeof existing.lastError === 'string' &&
+      existing.lastError.toLowerCase().includes('initialisation failed');
+
+    if (shouldResetPersistedAuth) {
+      await this.resetPersistedAuth(accountId);
+    }
+
     await this.createClient(account);
+  }
+
+  async cancelSession(accountId: string): Promise<void> {
+    this.clearReconnect(accountId);
+    this.reconnectingAccounts.delete(accountId);
+    this.reconnectAttempts.delete(accountId);
+    this.qrRotationCounts.delete(accountId);
+
+    const session = this.sessions.get(accountId);
+    if (session) {
+      if (session.client && typeof session.client.destroy === 'function') {
+        try { await session.client.destroy(); } catch { /* ignore */ }
+      }
+      session.status = 'idle';
+      session.lastEventAt = new Date().toISOString();
+      session.lastError = 'Session cancelled. Click Connect to try again.';
+      session.qrCode = null;
+      session.pairingCode = null;
+      session.pairingCodeGeneratedAt = null;
+    }
+    this.logger.info({ accountId }, 'WhatsApp session cancelled — returned to idle');
   }
 
   async forceRestartAccount(accountId: string): Promise<void> {
@@ -288,6 +325,42 @@ export class SessionManager {
     }
   }
 
+  private async resetPersistedAuth(accountId: string): Promise<void> {
+    this.clearReconnect(accountId);
+    this.reconnectingAccounts.delete(accountId);
+    this.reconnectAttempts.delete(accountId);
+    this.qrRotationCounts.delete(accountId);
+
+    const session = this.sessions.get(accountId);
+    if (session?.client && typeof session.client.destroy === 'function') {
+      try {
+        await session.client.destroy();
+      } catch {
+        // ignore cleanup errors and continue resetting persisted auth
+      }
+    }
+
+    const remoteAuthName = `RemoteAuth-${accountId}`;
+    const sessionDir = path.join(this.sessionDataPath, remoteAuthName);
+    const sessionZip = path.join(this.sessionDataPath, `${remoteAuthName}.zip`);
+
+    this.store.deleteBackup(accountId);
+
+    try {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    } catch {
+      // already gone
+    }
+
+    try {
+      fs.rmSync(sessionZip, { force: true });
+    } catch {
+      // already gone
+    }
+
+    this.logger.warn({ accountId }, 'Cleared persisted WhatsApp auth state before requesting a fresh QR');
+  }
+
   private async createClient(account: BridgeAccountConfig): Promise<void> {
     const client = new Client({
       authStrategy: new SafeRemoteAuth({
@@ -334,10 +407,12 @@ export class SessionManager {
     try {
       await client.initialize();
     } catch (error) {
-      this.logger.error({ accountId: account.id, error }, 'Chromium initialization failed — resetting to idle');
+      this.logger.error({ accountId: account.id, error }, 'Chromium initialization failed — scheduling reconnect');
       try { await client.destroy(); } catch { /* ignore */ }
-      session.status = 'idle';
-      session.lastError = 'Session initialisation failed. Click Connect to try again.';
+      session.status = 'degraded';
+      session.lastEventAt = new Date().toISOString();
+      session.lastError = 'Session initialisation failed. Retrying automatically.';
+      this.scheduleReconnect(account.id);
     }
   }
 
@@ -354,12 +429,21 @@ export class SessionManager {
     };
 
     session.client.on('qr', (qr) => {
+      const rotations = (this.qrRotationCounts.get(session.account.id) ?? 0) + 1;
+      this.qrRotationCounts.set(session.account.id, rotations);
+
+      if (rotations > MAX_QR_ROTATIONS) {
+        this.logger.warn({ accountId: session.account.id, rotations }, `QR rotated ${MAX_QR_ROTATIONS} times with no scan — cancelling session`);
+        void this.cancelSession(session.account.id);
+        return;
+      }
+
       updateStatus('needs_qr');
       session.qrCode = qr;
       session.pairingCode = null;
       session.pairingCodeGeneratedAt = null;
       qrcode.generate(qr, { small: true });
-      this.logger.info({ accountId: session.account.id }, 'QR code generated for WhatsApp login');
+      this.logger.info({ accountId: session.account.id, rotation: rotations, max: MAX_QR_ROTATIONS }, 'QR code generated for WhatsApp login');
     });
 
     session.client.on('code', (code) => {
@@ -372,12 +456,16 @@ export class SessionManager {
 
     session.client.on('authenticated', () => {
       this.clearReconnect(session.account.id);
+      this.reconnectAttempts.delete(session.account.id);
+      this.qrRotationCounts.delete(session.account.id);
       updateStatus('connecting');
       this.logger.info({ accountId: session.account.id }, 'WhatsApp session authenticated');
     });
 
     session.client.on('ready', () => {
       this.clearReconnect(session.account.id);
+      this.reconnectAttempts.delete(session.account.id);
+      this.qrRotationCounts.delete(session.account.id);
       updateStatus('connected');
       this.logger.info({ accountId: session.account.id }, 'WhatsApp session ready');
     });
@@ -435,13 +523,22 @@ export class SessionManager {
       return;
     }
 
+    const attempts = (this.reconnectAttempts.get(accountId) ?? 0) + 1;
+    this.reconnectAttempts.set(accountId, attempts);
+
+    if (attempts > MAX_RECONNECT_ATTEMPTS) {
+      this.logger.warn({ accountId, attempts }, `Reached ${MAX_RECONNECT_ATTEMPTS} reconnect attempts — cancelling session`);
+      void this.cancelSession(accountId);
+      return;
+    }
+
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(accountId);
       void this.reconnectSession(accountId);
-    }, 10000);
+    }, RECONNECT_DELAY_MS);
 
     this.reconnectTimers.set(accountId, timer);
-    this.logger.info({ accountId }, 'Scheduled WhatsApp session reconnect');
+    this.logger.info({ accountId, attempt: attempts, max: MAX_RECONNECT_ATTEMPTS }, 'Scheduled WhatsApp session reconnect');
   }
 
   private async reconnectSession(accountId: string): Promise<void> {

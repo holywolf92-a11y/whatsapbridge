@@ -1,145 +1,106 @@
 # Check Worker Status - Diagnose Document Processing Issues
-# This script calls the backend API to check if workers are running
+# Calls the backend API to check if queue workers are running.
 
-Write-Host "🔍 Checking Worker Status..." -ForegroundColor Cyan
+$ts = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$url = "https://glorious-flexibility-production.up.railway.app/api/worker-status?ts=$ts"
+
+Write-Host "Checking worker status..." -ForegroundColor Cyan
+Write-Host "URL: $url" -ForegroundColor DarkGray
 Write-Host ""
-
-$url = "https://recruitment-portal-backend-production-d1f7.up.railway.app/api/worker-status"
 
 try {
-    $response = Invoke-RestMethod -Uri $url -Method Get -ContentType "application/json"
-    
-    Write-Host "=" * 80 -ForegroundColor Gray
+    $response = Invoke-RestMethod -Uri $url -Method Get -ContentType "application/json" -TimeoutSec 20
+
+    Write-Host ("=" * 80) -ForegroundColor Gray
     Write-Host "WORKER STATUS REPORT" -ForegroundColor Yellow
-    Write-Host "=" * 80 -ForegroundColor Gray
+    Write-Host ("=" * 80) -ForegroundColor Gray
     Write-Host ""
-    
-    # Overall Status
-    Write-Host "📊 Overall Status: $($response.overall)" -ForegroundColor $(if ($response.overall -like "*✅*") { "Green" } elseif ($response.overall -like "*⚠️*") { "Yellow" } else { "Red" })
+
+    Write-Host "Overall: $($response.overall)" -ForegroundColor Green
+    Write-Host "Timestamp: $($response.timestamp)" -ForegroundColor DarkGray
+    if ($null -ne $response.cached) {
+        Write-Host "Cached: $($response.cached)" -ForegroundColor DarkGray
+    }
+    if ($response.deployment) {
+        $commitSha = $response.deployment.commitSha
+        if (-not $commitSha) { $commitSha = $response.deployment.commit_sha }
+        $commitShort = $response.deployment.commitShort
+        if (-not $commitShort) { $commitShort = $response.deployment.commit_short }
+
+        $deployLine = "Deployment: role=$($response.deployment.role) service=$($response.deployment.service)"
+        if ($commitSha -or $commitShort) {
+            $commitDisplay = $commitShort
+            if (-not $commitDisplay) { $commitDisplay = $commitSha }
+            $deployLine = "$deployLine commit=$commitDisplay"
+        }
+        Write-Host $deployLine -ForegroundColor DarkGray
+    }
     Write-Host ""
-    
-    # Environment Variables
-    Write-Host "🔧 Environment Configuration:" -ForegroundColor Yellow
-    Write-Host "   RUN_WORKER: $($response.environment.RUN_WORKER)" -ForegroundColor $(if ($response.environment.RUN_WORKER -eq 'true') { "Green" } else { "Red" })
-    Write-Host "   REDIS_URL: $($response.environment.REDIS_URL)" -ForegroundColor $(if ($response.environment.REDIS_URL -like "*✅*") { "Green" } else { "Red" })
-    Write-Host "   PYTHON_CV_PARSER_URL: $($response.environment.PYTHON_CV_PARSER_URL)" -ForegroundColor $(if ($response.environment.PYTHON_CV_PARSER_URL -like "*✅*") { "Green" } else { "Red" })
-    Write-Host "   PYTHON_HMAC_SECRET: $($response.environment.PYTHON_HMAC_SECRET)" -ForegroundColor $(if ($response.environment.PYTHON_HMAC_SECRET -like "*✅*") { "Green" } else { "Red" })
+
+    Write-Host "Environment:" -ForegroundColor Yellow
+    if ($response.environment) {
+        Write-Host "  RUN_WORKER: $($response.environment.RUN_WORKER)" -ForegroundColor Gray
+        Write-Host "  SERVICE_START_COMMAND: $($response.environment.SERVICE_START_COMMAND)" -ForegroundColor Gray
+        Write-Host "  REDIS_URL: $($response.environment.REDIS_URL)" -ForegroundColor Gray
+        Write-Host "  PYTHON_CV_PARSER_URL: $($response.environment.PYTHON_CV_PARSER_URL)" -ForegroundColor Gray
+        Write-Host "  PYTHON_HMAC_SECRET: $($response.environment.PYTHON_HMAC_SECRET)" -ForegroundColor Gray
+    } else {
+        Write-Host "  (no environment block in response)" -ForegroundColor DarkGray
+    }
     Write-Host ""
-    
-    # Workers Status
-    Write-Host "👷 Workers Status:" -ForegroundColor Yellow
-    Write-Host "   Enabled: $(if ($response.workers.enabled) { '✅ YES' } else { '❌ NO' })" -ForegroundColor $(if ($response.workers.enabled) { "Green" } else { "Red" })
-    Write-Host "   CV Parser Configured: $(if ($response.workers.cvParser.configured) { '✅ YES' } else { '❌ NO' })" -ForegroundColor $(if ($response.workers.cvParser.configured) { "Green" } else { "Red" })
-    Write-Host "   Document Verification Configured: $(if ($response.workers.documentVerification.configured) { '✅ YES' } else { '❌ NO' })" -ForegroundColor $(if ($response.workers.documentVerification.configured) { "Green" } else { "Red" })
+
+    Write-Host "Workers:" -ForegroundColor Yellow
+    if ($response.workers) {
+        Write-Host "  enabled: $($response.workers.enabled)" -ForegroundColor Gray
+        Write-Host "  mode: $($response.workers.mode)" -ForegroundColor Gray
+        Write-Host "  cvParser.configured: $($response.workers.cvParser.configured)" -ForegroundColor Gray
+        Write-Host "  documentVerification.configured: $($response.workers.documentVerification.configured)" -ForegroundColor Gray
+    } else {
+        Write-Host "  (no workers block in response)" -ForegroundColor DarkGray
+    }
     Write-Host ""
-    
-    # Queue Status
-    Write-Host "📦 Queue Status:" -ForegroundColor Yellow
-    if ($response.queues.available) {
+
+    Write-Host "Queues:" -ForegroundColor Yellow
+    if (-not $response.queues -or -not $response.queues.available) {
+        Write-Host "  queues not available" -ForegroundColor Red
+        if ($response.queues -and $response.queues.error) {
+            Write-Host "  error: $($response.queues.error)" -ForegroundColor Red
+        }
+    } else {
         $cvQueue = $response.queues.jobs.cvParsing
         if (-not $cvQueue) { $cvQueue = $response.queues.jobs.cvParser }
+        $docQueue = $response.queues.jobs.documentVerification
 
-        $docVerQueue = $response.queues.jobs.documentVerification
+        Write-Host "  CV Parsing" -ForegroundColor Cyan
+        Write-Host "    waiting:   $($cvQueue.waiting)" -ForegroundColor Gray
+        Write-Host "    active:    $($cvQueue.active)" -ForegroundColor Gray
+        Write-Host "    completed: $($cvQueue.completed)" -ForegroundColor Gray
+        Write-Host "    failed:    $($cvQueue.failed)" -ForegroundColor Gray
+        Write-Host "    delayed:   $($cvQueue.delayed)" -ForegroundColor Gray
 
-        $waMediaQueue = $response.queues.jobs.whatsappMedia
-        $waVerifyQueue = $response.queues.jobs.whatsappAttachmentVerification
-
-        Write-Host "   Redis Connected: ✅ YES" -ForegroundColor Green
         Write-Host ""
-        Write-Host "   CV Parser Queue:" -ForegroundColor Cyan
-        Write-Host "      Waiting: $($cvQueue.waiting)" -ForegroundColor Gray
-        Write-Host "      Active: $($cvQueue.active)" -ForegroundColor Gray
-        Write-Host "      Completed: $($cvQueue.completed)" -ForegroundColor Gray
-        Write-Host "      Failed: $($cvQueue.failed)" -ForegroundColor $(if ($cvQueue.failed -gt 0) { "Red" } else { "Gray" })
-        Write-Host ""
-        Write-Host "   Document Verification Queue:" -ForegroundColor Cyan
-        Write-Host "      Waiting: $($docVerQueue.waiting)" -ForegroundColor Gray
-        Write-Host "      Active: $($docVerQueue.active)" -ForegroundColor Gray
-        Write-Host "      Completed: $($docVerQueue.completed)" -ForegroundColor Gray
-        Write-Host "      Failed: $($docVerQueue.failed)" -ForegroundColor $(if ($docVerQueue.failed -gt 0) { "Red" } else { "Gray" })
-
-        if ($waMediaQueue) {
-            Write-Host ""
-            Write-Host "   WhatsApp Media Queue:" -ForegroundColor Cyan
-            Write-Host "      Waiting: $($waMediaQueue.waiting)" -ForegroundColor Gray
-            Write-Host "      Active: $($waMediaQueue.active)" -ForegroundColor Gray
-            Write-Host "      Completed: $($waMediaQueue.completed)" -ForegroundColor Gray
-            Write-Host "      Failed: $($waMediaQueue.failed)" -ForegroundColor $(if ($waMediaQueue.failed -gt 0) { "Red" } else { "Gray" })
-        }
-
-        if ($waVerifyQueue) {
-            Write-Host ""
-            Write-Host "   WhatsApp Attachment Verification Queue:" -ForegroundColor Cyan
-            Write-Host "      Waiting: $($waVerifyQueue.waiting)" -ForegroundColor Gray
-            Write-Host "      Active: $($waVerifyQueue.active)" -ForegroundColor Gray
-            Write-Host "      Completed: $($waVerifyQueue.completed)" -ForegroundColor Gray
-            Write-Host "      Failed: $($waVerifyQueue.failed)" -ForegroundColor $(if ($waVerifyQueue.failed -gt 0) { "Red" } else { "Gray" })
-        }
-    } else {
-        Write-Host "   Redis Connected: ❌ NO" -ForegroundColor Red
-        if ($response.queues.error) {
-            Write-Host "   Error: $($response.queues.error)" -ForegroundColor Red
-        }
+        Write-Host "  Document Verification" -ForegroundColor Cyan
+        Write-Host "    waiting:   $($docQueue.waiting)" -ForegroundColor Gray
+        Write-Host "    active:    $($docQueue.active)" -ForegroundColor Gray
+        Write-Host "    completed: $($docQueue.completed)" -ForegroundColor Gray
+        Write-Host "    failed:    $($docQueue.failed)" -ForegroundColor Gray
+        Write-Host "    delayed:   $($docQueue.delayed)" -ForegroundColor Gray
     }
     Write-Host ""
-    
-    # Pending Documents
-    Write-Host "📄 Document Status:" -ForegroundColor Yellow
-    Write-Host "   Pending Documents: $($response.pendingDocuments)" -ForegroundColor $(if ($response.pendingDocuments -gt 0) { "Yellow" } else { "Green" })
-    
-    if ($response.stuckDocuments -and $response.stuckDocuments.count -gt 0) {
-        Write-Host "   Stuck Documents (>5 min): $($response.stuckDocuments.count)" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "   🚨 Stuck Documents:" -ForegroundColor Red
-        foreach ($doc in $response.stuckDocuments.documents) {
-            Write-Host "      • $($doc.name)" -ForegroundColor Gray
-            Write-Host "        ID: $($doc.id)" -ForegroundColor DarkGray
-            Write-Host "        Stuck for: $($doc.stuck_duration_minutes) minutes" -ForegroundColor DarkGray
-        }
-    } else {
-        Write-Host "   Stuck Documents: 0 ✅" -ForegroundColor Green
+
+    Write-Host "Documents:" -ForegroundColor Yellow
+    Write-Host "  pendingDocuments: $($response.pendingDocuments)" -ForegroundColor Gray
+
+    $stuckCount = 0
+    if ($response.stuckDocuments -and $null -ne $response.stuckDocuments.count) {
+        $stuckCount = [int]$response.stuckDocuments.count
     }
-    Write-Host ""
-    
-    # Health Summary
-    Write-Host "=" * 80 -ForegroundColor Gray
-    Write-Host "HEALTH SUMMARY" -ForegroundColor Yellow
-    Write-Host "=" * 80 -ForegroundColor Gray
-    Write-Host "   Workers Running: $(if ($response.health.workersRunning) { '✅' } else { '❌' })" -ForegroundColor $(if ($response.health.workersRunning) { "Green" } else { "Red" })
-    Write-Host "   Redis Connected: $(if ($response.health.redisConnected) { '✅' } else { '❌' })" -ForegroundColor $(if ($response.health.redisConnected) { "Green" } else { "Red" })
-    Write-Host "   Python Service Configured: $(if ($response.health.pythonServiceConfigured) { '✅' } else { '❌' })" -ForegroundColor $(if ($response.health.pythonServiceConfigured) { "Green" } else { "Red" })
-    Write-Host "   Stuck Documents: $($response.health.stuckDocuments)" -ForegroundColor $(if ($response.health.stuckDocuments -eq 0) { "Green" } else { "Red" })
-    Write-Host ""
-    
-    # Recommendations
-    if (-not $response.workers.enabled) {
-        Write-Host "💡 RECOMMENDATION:" -ForegroundColor Yellow
-        Write-Host "   Set RUN_WORKER=true in Railway environment variables" -ForegroundColor White
-        Write-Host "   Then redeploy the backend" -ForegroundColor White
-        Write-Host ""
-    }
-    
-    if ($response.stuckDocuments -and $response.stuckDocuments.count -gt 0) {
-        Write-Host "💡 TO FIX STUCK DOCUMENTS:" -ForegroundColor Yellow
-        Write-Host "   1. Enable workers (if not already enabled)" -ForegroundColor White
-        Write-Host "   2. Click 'Reprocess' button on each document in the UI" -ForegroundColor White
-        Write-Host "   3. OR run: .\fix-photos.ps1 (for photos)" -ForegroundColor White
-        Write-Host ""
-    }
-    
-    Write-Host "=" * 80 -ForegroundColor Gray
-    Write-Host "Timestamp: $($response.timestamp)" -ForegroundColor DarkGray
-    Write-Host "=" * 80 -ForegroundColor Gray
+    Write-Host "  stuckDocuments: $stuckCount" -ForegroundColor $(if ($stuckCount -gt 0) { "Red" } else { "Green" })
+
+    exit 0
 }
 catch {
-    Write-Host "❌ Error checking worker status" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Error details:" -ForegroundColor Yellow
+    Write-Host "Error checking worker status" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
-    Write-Host ""
-    Write-Host "💡 Make sure the backend is deployed and accessible at:" -ForegroundColor Yellow
-    Write-Host "   $url" -ForegroundColor White
+    exit 1
 }
-
-Write-Host ""
-Read-Host "Press Enter to exit"

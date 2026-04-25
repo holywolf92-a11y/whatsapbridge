@@ -48,6 +48,7 @@ export interface DeliveryPayload {
   fileHash: string;
   fileSizeBytes: number;
   detection: DetectionResult;
+  backfill?: boolean;
 }
 
 export interface DeliveryResult {

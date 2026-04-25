@@ -12,20 +12,20 @@
   {
     "id": "whatsapp2",
     "displayName": "WhatsApp 2",
-    "enabled": false,
+    "enabled": true,
     "owner": "Operations",
     "rolloutWave": "production",
-    "notes": "Disabled to save RAM (Chromium instance). Re-enable when a second phone is ready to connect.",
+    "notes": "Second WhatsApp bridge slot enabled for production linking and QR/pairing login.",
     "allowedSenders": [],
     "blockedSenders": []
   },
   {
     "id": "whatsapp3",
     "displayName": "WhatsApp 3",
-    "enabled": true,
+    "enabled": false,
     "owner": "Operations",
     "rolloutWave": "production",
-    "notes": "Third WhatsApp bridge slot for operations traffic.",
+    "notes": "Disabled — no phone connected.",
     "allowedSenders": [],
     "blockedSenders": []
   },

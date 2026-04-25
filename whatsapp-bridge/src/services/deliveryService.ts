@@ -33,6 +33,7 @@ export class DeliveryService {
       `original_timestamp=${originalTimestamp}`,
       `detection=${payload.detection.verdict}`,
       `file_hash=${payload.fileHash}`,
+      `backfill=${payload.backfill === true ? 'true' : 'false'}`,
     ].join('\n');
 
     const result = await payload.client.sendMessage(destination, payload.media, { caption });
@@ -68,6 +69,7 @@ export class DeliveryService {
     form.append('mimeType', payload.media.mimetype);
     form.append('fileName', payload.media.filename ?? 'upload.bin');
     form.append('detectionVerdict', payload.detection.verdict);
+    form.append('backfill', payload.backfill === true ? 'true' : 'false');
 
     const response = await fetch(this.config.backendUploadUrl, {
       method: 'POST',

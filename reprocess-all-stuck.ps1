@@ -1,21 +1,33 @@
+param(
+    [switch]$Force  # Use -Force to bypass the split-dedup guard (re-splits already-processed PDFs). EXPENSIVE — each forced re-process calls OpenAI again.
+)
+
 $BASE = "https://recruitment-portal-backend-production-d1f7.up.railway.app"
 $TOKEN = "falisha-admin-2026-X9k7mPqr4LzT"
 $SB_URL = "https://hncvsextwmvjydcukdwx.supabase.co"
 $SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhuY3ZzZXh0d212anlkY3VrZHd4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2NzI2NzMyOSwiZXhwIjoyMDgyODQzMzI5fQ.X0XKEnH8pUqthf0tziaRWFAsRIaeU6am0qtWDxuR6mQ"
 $H = @{"apikey"=$SB_KEY;"Authorization"="Bearer $SB_KEY"}
 
+if ($Force) {
+    Write-Host "⚠️  WARNING: -Force flag set. This bypasses the split-dedup guard and will re-run OpenAI on every attachment." -ForegroundColor Yellow
+    Write-Host "   This can cost $0.03+ per attachment. Press Ctrl+C within 5 seconds to cancel..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 5
+}
+
+$forceParam = if ($Force) { "?force=true" } else { "" }
+
 Write-Host "Fetching stuck CVs..."
 $stuck = Invoke-RestMethod -Method GET `
     -Uri "$SB_URL/rest/v1/inbox_attachments?candidate_id=is.null&attachment_type=eq.cv&select=id,file_name&order=created_at.asc&limit=200" `
     -Headers $H
 
-Write-Host "Found $($stuck.Count) stuck CV attachments"
+Write-Host "Found $($stuck.Count) stuck CV attachments (force=$($Force.IsPresent))"
 
 $ok = 0; $fail = 0
 foreach ($att in $stuck) {
     try {
         $r = Invoke-RestMethod -Method POST `
-            -Uri "$BASE/api/cv-inbox/attachments/$($att.id)/process?force=true" `
+            -Uri "$BASE/api/cv-inbox/attachments/$($att.id)/process$forceParam" `
             -Headers @{"x-admin-token"=$TOKEN}
         Write-Host "  OK  [$ok/$($stuck.Count)] $($att.file_name) -> job $($r.job_id)"
         $ok++
@@ -27,4 +39,4 @@ foreach ($att in $stuck) {
 }
 
 Write-Host ""
-Write-Host "=== DONE: OK=$ok  FAIL=$fail ==="
+Write-Host "=== DONE: OK=$ok  FAIL=$fail ===" 
