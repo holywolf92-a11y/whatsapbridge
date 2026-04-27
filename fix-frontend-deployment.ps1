@@ -1,5 +1,5 @@
 # Frontend Deployment Fix Script
-# This script ensures all frontend changes are properly pushed and deployed
+# Frontend is GitHub-linked in Railway. Push to GitHub only; do not run railway up.
 
 $repo = "d:\falisha\Recruitment Automation Portal (2)"
 Set-Location $repo
@@ -49,20 +49,18 @@ try {
 
 # Step 5: Trigger Railway deployment
 Write-Host ""
-Write-Host "[5] Deploying to Railway..." -ForegroundColor Yellow
+Write-Host "[5] Triggering Railway via GitHub..." -ForegroundColor Yellow
 Write-Host "Building frontend..." -ForegroundColor Yellow
 npm run build 2>&1 | Select-Object -Last 10
 
 Write-Host ""
-Write-Host "Deploying with Railway..." -ForegroundColor Yellow
-Write-Host "Note: You may need to manually select 'exquisite-surprise' service"
-# railway up will require manual selection
+Write-Host "Pushing frontend repo is enough for Railway." -ForegroundColor Green
+Write-Host "Do NOT run 'railway up' for this repo; that creates duplicate/manual deployment records." -ForegroundColor Green
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Next Steps:" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "1. Run: railway service" -ForegroundColor White
-Write-Host "   Select: exquisite-surprise" -ForegroundColor White
-Write-Host "2. Run: railway up" -ForegroundColor White
-Write-Host "3. Verify: https://exquisite-surprise-production.up.railway.app" -ForegroundColor White
+Write-Host "1. Verify the push reached the frontend repo" -ForegroundColor White
+Write-Host "2. Wait for Railway GitHub deploy to complete" -ForegroundColor White
+Write-Host "3. Verify: https://falishajobs.up.railway.app" -ForegroundColor White
