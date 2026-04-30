@@ -1,0 +1,36 @@
+node_modules
+API_KEYS_SECURE.md
+RAILWAY_OPENAI_KEY_SETUP.md
+SUPABASE_CREDENTIALS.md
+API_KEYS_SECURE.md
+SUPABASE_CREDENTIALS.md
+
+build/
+dist/
+.env
+.env.*
+
+# Local scripts/artifacts
+pr-urls.txt
+usman-candidates.json
+profile-test.jpeg
+tmp_frontend_modal.tsx
+fix-cv-photos.js
+pr-create.ps1
+
+# Local debug logs
+backend_check.txt
+check_status.txt
+deploy_status.txt
+deployment_logs.txt
+final_check.txt
+final_logs.txt
+fresh_logs.txt
+latest_backend.txt
+latest_logs.txt
+logs.txt
+logs_after_fix.txt
+logs_after_test.txt
+raw_logs.txt
+recent_logs.txt
+temp_logs.txt

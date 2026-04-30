@@ -1,0 +1,6 @@
+auth/
+output/
+dist/
+node_modules/
+*.zip
+.env

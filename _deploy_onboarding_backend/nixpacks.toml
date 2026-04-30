@@ -1,0 +1,15 @@
+[variables]
+NIXPACKS_NODE_VERSION = "20"
+NIXPACKS_BUILD_CMD = "npm run build"
+
+[phases.setup]
+nixPkgs = ["nodejs", "chromium"]
+
+[phases.install]
+cmds = [
+  "rm -rf /app/node_modules/.cache || true",
+  "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium npm ci --production=false"
+]
+
+[start]
+cmd = "sh -lc 'npm run ${SERVICE_START_COMMAND:-start:api}'"

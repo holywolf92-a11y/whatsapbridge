@@ -1,0 +1,42 @@
+[
+  {
+    "id": "whatsapp1",
+    "displayName": "WhatsApp 1",
+    "enabled": true,
+    "owner": "Operations",
+    "rolloutWave": "production",
+    "notes": "Primary WhatsApp bridge slot for operations traffic.",
+    "allowedSenders": [],
+    "blockedSenders": []
+  },
+  {
+    "id": "whatsapp2",
+    "displayName": "WhatsApp 2",
+    "enabled": false,
+    "owner": "Operations",
+    "rolloutWave": "production",
+    "notes": "Disabled to save RAM (Chromium instance). Re-enable when a second phone is ready to connect.",
+    "allowedSenders": [],
+    "blockedSenders": []
+  },
+  {
+    "id": "whatsapp3",
+    "displayName": "WhatsApp 3",
+    "enabled": false,
+    "owner": "Operations",
+    "rolloutWave": "production",
+    "notes": "Disabled — no phone connected.",
+    "allowedSenders": [],
+    "blockedSenders": []
+  },
+  {
+    "id": "whatsapp4",
+    "displayName": "WhatsApp 4",
+    "enabled": false,
+    "owner": "Operations",
+    "rolloutWave": "production",
+    "notes": "Disabled to save RAM (Chromium instance). Re-enable when a fourth phone is ready to connect.",
+    "allowedSenders": [],
+    "blockedSenders": []
+  }
+]

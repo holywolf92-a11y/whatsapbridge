@@ -1,0 +1,24 @@
+[
+  {
+    "id": "legacy-1",
+    "displayName": "Legacy Account 1",
+    "enabled": true,
+    "owner": "Operations",
+    "rolloutWave": "pilot",
+    "notes": "Primary pilot account.",
+    "allowedSenders": [
+      "923001112223@c.us"
+    ],
+    "blockedSenders": []
+  },
+  {
+    "id": "legacy-2",
+    "displayName": "Legacy Account 2",
+    "enabled": false,
+    "owner": "Recruitment",
+    "rolloutWave": "wave-2",
+    "notes": "Enable only after pilot metrics pass.",
+    "allowedSenders": [],
+    "blockedSenders": []
+  }
+]

@@ -1,0 +1,92 @@
+{
+    "review_rows_total":  672,
+    "parsed_job_found":  672,
+    "parsed_job_missing":  0,
+    "strong_identity":  80,
+    "email_or_phone":  80,
+    "cnic_or_passport":  44,
+    "name_plus_profile_only":  20,
+    "no_useful_identity":  572,
+    "sample_promotable":  [
+                              {
+                                  "id":  "c0d40779-2bcf-48d3-9e14-183be0aabca5",
+                                  "name":  "MUHAMMAD USMAN",
+                                  "email":  "gjtpolice@gmail.com",
+                                  "phone":  null,
+                                  "cnic":  "yes",
+                                  "passport":  "yes"
+                              },
+                              {
+                                  "id":  "78901346-fb3f-4fca-a10d-ca12144fc295",
+                                  "name":  "Rana Junaid Wasi",
+                                  "email":  "junaidwasi96.rj@gmail.com",
+                                  "phone":  "0301-7539702",
+                                  "cnic":  "no",
+                                  "passport":  "no"
+                              },
+                              {
+                                  "id":  "f984925f-e604-4398-959b-8bf6944c1908",
+                                  "name":  "Nabeeha Naz",
+                                  "email":  "nabeehaafzal10@gmail.com",
+                                  "phone":  "+92 3334953632",
+                                  "cnic":  "no",
+                                  "passport":  "no"
+                              },
+                              {
+                                  "id":  "70e43d3b-ed98-4f35-a6fe-de0e0d76f37c",
+                                  "name":  "Shah Zaib Ur Rehman",
+                                  "email":  "shahzaiburrehman25@gmail.com",
+                                  "phone":  "+966565184920",
+                                  "cnic":  "no",
+                                  "passport":  "no"
+                              },
+                              {
+                                  "id":  "f1674602-6ed0-4e57-9610-9962ec714ac5",
+                                  "name":  "Talha Khan",
+                                  "email":  "rtk0768@gmail.com",
+                                  "phone":  "+92 333334290",
+                                  "cnic":  "no",
+                                  "passport":  "no"
+                              },
+                              {
+                                  "id":  "e22b6792-f929-4db7-8b0b-b769215984a9",
+                                  "name":  "Sharoon Sumar",
+                                  "email":  "sharoon.sumar35@gmail.com",
+                                  "phone":  "+92-324-7411472",
+                                  "cnic":  "no",
+                                  "passport":  "no"
+                              },
+                              {
+                                  "id":  "72af3d49-f1f6-44d9-96c6-ced2ca9e197a",
+                                  "name":  "Umar Arslan",
+                                  "email":  "umararslan59@gmail.com",
+                                  "phone":  "030555611057",
+                                  "cnic":  "no",
+                                  "passport":  "no"
+                              },
+                              {
+                                  "id":  "aed9d08b-6937-4d35-a5ed-eab63126276a",
+                                  "name":  "Arooj Asher Bhatti",
+                                  "email":  "aroojasherbhatti@gmail.com",
+                                  "phone":  "+92-333-9258448",
+                                  "cnic":  "no",
+                                  "passport":  "no"
+                              },
+                              {
+                                  "id":  "5fd84205-b96a-4803-bec2-ddd84e835c63",
+                                  "name":  "Sufyan Safeer",
+                                  "email":  "rajasufyan146@gmail.com",
+                                  "phone":  "+92 340 8186 200",
+                                  "cnic":  "no",
+                                  "passport":  "no"
+                              },
+                              {
+                                  "id":  "5a8ed684-37c5-4261-9a79-4e347203f3e8",
+                                  "name":  "Muhammad Nisar Khan",
+                                  "email":  "knisar752@gmail.com",
+                                  "phone":  "+92315-9385387",
+                                  "cnic":  "no",
+                                  "passport":  "no"
+                              }
+                          ]
+}

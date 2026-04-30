@@ -1,0 +1,11 @@
+[
+  {
+    "id": "legacy-1",
+    "displayName": "Legacy Account 1",
+    "enabled": true,
+    "allowedSenders": [
+      "923001112223@c.us"
+    ],
+    "blockedSenders": []
+  }
+]

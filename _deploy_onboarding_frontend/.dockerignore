@@ -1,0 +1,79 @@
+# Git and version control
+.git
+.gitignore
+.gitattributes
+
+# Dependencies (will be reinstalled in Docker)
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Build artifacts (not needed at runtime, will be rebuilt)
+dist
+build
+.next
+out
+
+# Development files
+.env
+.env.local
+.env.*.local
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Documentation and config
+README.md
+CHANGELOG.md
+LICENSE
+.prettierrc
+.eslintrc.json
+tsconfig.json
+
+# Test files and coverage
+__tests__
+test
+*.test.js
+*.spec.js
+.coverage
+coverage
+
+# Development tools
+.husky
+.lint-staged
+.editorconfig
+
+# Temporary files
+.tmp
+tmp
+temp
+*.log
+*.bak
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.circleci
+Jenkinsfile
+
+# Docker
+docker-compose.yml
+.docker
+.dockerignore
+
+# IDE and editors
+.vscode
+.idea
+*.sublime-project
+*.sublime-workspace
+.emacs_backup
+
+# OS specific
+.DS_Store
+Thumbs.db
+.env
+.env.local

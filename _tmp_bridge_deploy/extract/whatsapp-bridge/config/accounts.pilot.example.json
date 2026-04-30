@@ -1,0 +1,14 @@
+[
+  {
+    "id": "legacy-1",
+    "displayName": "Legacy Account 1",
+    "enabled": true,
+    "owner": "Operations",
+    "rolloutWave": "pilot",
+    "notes": "Single-account pilot for inbound CV forwarding to Meta intake.",
+    "allowedSenders": [
+      "923001112223@c.us"
+    ],
+    "blockedSenders": []
+  }
+]

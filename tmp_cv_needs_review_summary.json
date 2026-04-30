@@ -1,0 +1,16 @@
+{
+    "needs_review_total":  610,
+    "with_job":  0,
+    "missing_job":  610,
+    "parsed_name":  0,
+    "parsed_email":  0,
+    "parsed_phone":  0,
+    "parsed_email_or_phone":  0,
+    "parsed_cnic_or_passport":  0,
+    "parsed_strong_identity":  0,
+    "parsed_name_plus_profile_only":  0,
+    "parsed_no_identity":  0,
+    "by_source":  {
+
+                  }
+}
