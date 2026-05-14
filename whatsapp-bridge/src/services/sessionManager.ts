@@ -41,10 +41,11 @@ type SessionSnapshot = {
   pairingCodeGeneratedAt: string | null;
 };
 
-const MAX_RECONNECT_ATTEMPTS = 10;
+const MAX_FAST_RECONNECT_ATTEMPTS = 10;  // first N attempts: short delay
 const MAX_QR_ROTATIONS = 10;
 const ACCOUNT_START_STAGGER_MS = 15000;
-const RECONNECT_DELAY_MS = 15000;
+const RECONNECT_DELAY_MS = 15000;            // 15s for first 10 attempts
+const RECONNECT_LONG_DELAY_MS = 10 * 60 * 1000; // 10 min after that — retry forever
 
 export class SessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
@@ -302,10 +303,11 @@ export class SessionManager {
   }
 
   /**
-   * Watchdog: runs every 2 minutes.  Any session that is enabled but stuck in
-   * "degraded" (and has no reconnect already scheduled) gets kicked into the
-   * reconnect pipeline.  This recovers accounts that go silent without firing
-   * the "disconnected" event (e.g. Railway container network blip).
+   * Watchdog: runs every 2 minutes.
+   * - Reconnects sessions stuck in "degraded" without a scheduled retry.
+   * - Reconnects sessions in "idle" that still have a saved session backup
+   *   (e.g. after the reconnect limit was hit and cancelSession was called,
+   *   but the auth zip on the Railway volume is still valid).
    */
   private async runWatchdog(): Promise<void> {
     if (this.isShuttingDown) return;
@@ -321,6 +323,12 @@ export class SessionManager {
       if (session.status === 'degraded') {
         this.logger.warn({ accountId: id }, 'Watchdog detected degraded session — scheduling reconnect');
         this.scheduleReconnect(id);
+      } else if (session.status === 'idle' && this.store.hasBackup(id)) {
+        // Session was cancelled (hit reconnect limit) but the auth zip is
+        // still on the volume — try to restore it automatically.
+        this.logger.info({ accountId: id }, 'Watchdog reviving idle session that has a saved backup');
+        this.reconnectAttempts.delete(id);
+        void this.createClient(session.account);
       }
     }
   }
@@ -526,19 +534,24 @@ export class SessionManager {
     const attempts = (this.reconnectAttempts.get(accountId) ?? 0) + 1;
     this.reconnectAttempts.set(accountId, attempts);
 
-    if (attempts > MAX_RECONNECT_ATTEMPTS) {
-      this.logger.warn({ accountId, attempts }, `Reached ${MAX_RECONNECT_ATTEMPTS} reconnect attempts — cancelling session`);
-      void this.cancelSession(accountId);
-      return;
-    }
+    // First MAX_FAST_RECONNECT_ATTEMPTS: retry quickly every 15s.
+    // After that: switch to a long delay (10 min) and keep retrying forever.
+    // We never permanently cancel — WhatsApp may accept the session again
+    // after a backoff, and Railway restarts should always be recoverable.
+    const delay = attempts <= MAX_FAST_RECONNECT_ATTEMPTS ? RECONNECT_DELAY_MS : RECONNECT_LONG_DELAY_MS;
 
     const timer = setTimeout(() => {
       this.reconnectTimers.delete(accountId);
       void this.reconnectSession(accountId);
-    }, RECONNECT_DELAY_MS);
+    }, delay);
 
     this.reconnectTimers.set(accountId, timer);
-    this.logger.info({ accountId, attempt: attempts, max: MAX_RECONNECT_ATTEMPTS }, 'Scheduled WhatsApp session reconnect');
+    this.logger.info(
+      { accountId, attempt: attempts, delayMs: delay },
+      attempts <= MAX_FAST_RECONNECT_ATTEMPTS
+        ? 'Scheduled WhatsApp session reconnect (fast retry)'
+        : 'Scheduled WhatsApp session reconnect (long backoff — will keep retrying)',
+    );
   }
 
   private async reconnectSession(accountId: string): Promise<void> {
