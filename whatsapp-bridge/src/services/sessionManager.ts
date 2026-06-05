@@ -48,6 +48,10 @@ const ACCOUNT_START_STAGGER_MS = 15000;
 const RECONNECT_DELAY_MS = 15000;            // 15s for first 10 attempts
 const RECONNECT_LONG_DELAY_MS = 10 * 60 * 1000; // 10 min after that — retry forever
 
+const INIT_TIMEOUT_MS = 3 * 60 * 1000;         // 3 min before initialize() is declared hung
+const CONNECTING_STUCK_MS = 5 * 60 * 1000;     // 5 min in 'connecting' → force restart
+const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;   // check live connectivity every 5 min
+
 export class SessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly reconnectTimers = new Map<string, NodeJS.Timeout>();
@@ -57,6 +61,8 @@ export class SessionManager {
   private isShuttingDown = false;
   private readonly store: VolumeSessionStore;
   private watchdogTimer: NodeJS.Timeout | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  private periodicRestartTimer: NodeJS.Timeout | null = null;
   // Chrome profiles live in /tmp (ephemeral). Only the small auth zip backups
   // are kept on the Railway persistent volume.
   private readonly chromeTmpPath = path.join(os.tmpdir(), 'wwebjs-sessions');
@@ -130,6 +136,70 @@ export class SessionManager {
     // Railway volume doesn't fill up with stale browser cache data.
     this.purgeChromeCache();
     setInterval(() => { this.purgeChromeCache(); }, 6 * 60 * 60 * 1000);
+
+    // Ephemeral storage housekeeping: restart each connected Chrome session
+    // every 8 hours. Chrome accumulates deleted-but-held-open temp FDs over
+    // time; restarting the process flushes them before Railway hits its limit.
+    // Sessions are staggered 60s apart to avoid simultaneous reconnects.
+    this.periodicRestartTimer = setInterval(() => {
+      void this.periodicSessionRestart();
+    }, 8 * 60 * 60 * 1000);
+
+    // Heartbeat: every 5 minutes verify each session that claims to be
+    // connected actually is. WhatsApp Web can silently drop without firing
+    // a 'disconnected' event (network partition, browser freeze, etc.).
+    this.heartbeatTimer = setInterval(() => {
+      void this.runHeartbeat();
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private async periodicSessionRestart(): Promise<void> {
+    const connectedIds = Array.from(this.sessions.entries())
+      .filter(([, s]) => s.status === 'connected')
+      .map(([id]) => id);
+
+    for (let i = 0; i < connectedIds.length; i++) {
+      setTimeout(() => {
+        this.logger.info({ accountId: connectedIds[i] }, 'Periodic Chrome restart to flush ephemeral storage');
+        void this.forceRestartAccount(connectedIds[i]).catch((err) => {
+          this.logger.warn({ accountId: connectedIds[i], err }, 'Periodic restart failed — watchdog will recover');
+        });
+      }, i * 60_000);
+    }
+  }
+
+  /**
+   * Heartbeat: verify every session that reports 'connected' is actually alive
+   * by querying the WhatsApp Web page state directly. Detects silent drops that
+   * never emit a 'disconnected' event (network partitions, browser freezes).
+   */
+  private async runHeartbeat(): Promise<void> {
+    if (this.isShuttingDown) return;
+    for (const session of this.sessions.values()) {
+      const { id } = session.account;
+      if (
+        session.status !== 'connected' ||
+        this.reconnectingAccounts.has(id) ||
+        this.reconnectTimers.has(id)
+      ) continue;
+
+      try {
+        const state = await session.client.getState();
+        if (state !== 'CONNECTED') {
+          this.logger.warn({ accountId: id, state }, 'Heartbeat: non-CONNECTED state detected — reconnecting');
+          session.status = 'degraded';
+          session.lastEventAt = new Date().toISOString();
+          session.lastError = `Heartbeat detected state: ${state ?? 'null'}`;
+          this.scheduleReconnect(id);
+        }
+      } catch (err) {
+        this.logger.warn({ accountId: id, err }, 'Heartbeat: getState() threw — Chrome may be dead, reconnecting');
+        session.status = 'degraded';
+        session.lastEventAt = new Date().toISOString();
+        session.lastError = 'Heartbeat check failed — Chrome unresponsive';
+        this.scheduleReconnect(id);
+      }
+    }
   }
 
   /**
@@ -349,6 +419,14 @@ export class SessionManager {
       clearInterval(this.watchdogTimer);
       this.watchdogTimer = null;
     }
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.periodicRestartTimer) {
+      clearInterval(this.periodicRestartTimer);
+      this.periodicRestartTimer = null;
+    }
     for (const timer of this.reconnectTimers.values()) {
       clearTimeout(timer);
     }
@@ -385,6 +463,18 @@ export class SessionManager {
         this.logger.info({ accountId: id }, 'Watchdog reviving idle session that has a saved backup');
         this.reconnectAttempts.delete(id);
         void this.createClient(session.account);
+      } else if (session.status === 'connecting' && session.lastEventAt) {
+        // Detect initialize() hanging: if we've been stuck in 'connecting' for
+        // longer than CONNECTING_STUCK_MS, the Chrome process is likely frozen.
+        // Force a restart so reconnect can make a fresh attempt.
+        const stuckMs = Date.now() - new Date(session.lastEventAt).getTime();
+        if (stuckMs > CONNECTING_STUCK_MS) {
+          this.logger.warn({ accountId: id, stuckMs }, 'Watchdog detected session stuck in connecting — forcing restart');
+          session.status = 'degraded';
+          session.lastEventAt = new Date().toISOString();
+          session.lastError = 'Stuck in connecting state — forcing restart';
+          this.scheduleReconnect(id);
+        }
       }
     }
   }
@@ -457,6 +547,13 @@ export class SessionManager {
           '--disk-cache-size=1',
           '--media-cache-size=1',
           '--aggressive-cache-discard',
+          // Prevent Railway ephemeral storage exhaustion from held-open temp FDs.
+          // --no-zygote stops Chrome spawning a zygote process that creates many
+          // temp files it unlinks immediately (deleted-but-held-open pattern).
+          // --disable-crash-reporter stops crash dump files accumulating in /tmp.
+          '--no-zygote',
+          '--disable-crash-reporter',
+          '--disable-logging',
         ],
       },
     });
@@ -475,7 +572,15 @@ export class SessionManager {
     this.sessions.set(account.id, session);
     this.bindEvents(session);
     try {
-      await client.initialize();
+      await Promise.race([
+        client.initialize(),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`Chrome initialize() timed out after ${INIT_TIMEOUT_MS / 1000}s`)),
+            INIT_TIMEOUT_MS,
+          )
+        ),
+      ]);
     } catch (error) {
       this.logger.error({ accountId: account.id, error }, 'Chromium initialization failed — scheduling reconnect');
       try { await client.destroy(); } catch { /* ignore */ }
@@ -569,7 +674,9 @@ export class SessionManager {
           updateStatus('connected');
         }
       } catch (error) {
-        updateStatus('degraded', error);
+        // A processing error is not a connection failure — don't mark the session
+        // degraded. Log it and keep going; the heartbeat and 'disconnected' event
+        // handle actual connection drops.
         this.logger.error({ accountId: session.account.id, messageId: message.id._serialized, error }, 'Failed to process inbound message');
       }
     });
