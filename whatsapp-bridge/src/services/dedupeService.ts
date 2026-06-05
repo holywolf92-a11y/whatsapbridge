@@ -7,7 +7,7 @@ interface DedupeStoreShape {
   records: DedupeRecord[];
 }
 
-const PRUNE_AGE_MS = 30 * 24 * 60 * 60 * 1000;  // keep 30 days of history
+const PRUNE_AGE_MS = 3 * 24 * 60 * 60 * 1000;   // keep 3 days of history
 const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;   // sweep once per day
 
 export class FileBackedDedupeService {
