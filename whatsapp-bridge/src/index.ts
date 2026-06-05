@@ -261,7 +261,7 @@ function renderScanPage(accountId: string, options?: { notice?: string | null; e
 async function main(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger(config.logLevel);
-  const dedupeService = new FileBackedDedupeService(config.dedupeStorePath);
+  const dedupeService = new FileBackedDedupeService(config.dedupeStorePath, logger);
   const accountControlService = new AccountControlService(config.accountControlPath);
   const deliveryService = new DeliveryService(config, logger);
   const mediaHandler = new MediaHandler(config, dedupeService, deliveryService, logger);
@@ -443,10 +443,12 @@ async function main(): Promise<void> {
     logger.info({ port: config.healthPort, mode: config.bridgeMode, accountCount: config.accounts.length }, 'WhatsApp bridge health server listening');
   });
 
+  dedupeService.startPeriodicPrune();
   await sessionManager.start();
 
   const shutdown = async () => {
     logger.info('Shutting down WhatsApp bridge');
+    dedupeService.stopPeriodicPrune();
     server.close();
     await sessionManager.shutdown();
     process.exit(0);

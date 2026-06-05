@@ -1,16 +1,51 @@
 import fs from 'fs';
 import crypto from 'crypto';
+import type { Logger } from 'pino';
 import type { DedupeDecision, DedupeRecord } from '../types';
 
 interface DedupeStoreShape {
   records: DedupeRecord[];
 }
 
+const PRUNE_AGE_MS = 30 * 24 * 60 * 60 * 1000;  // keep 30 days of history
+const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;   // sweep once per day
+
 export class FileBackedDedupeService {
   private readonly records = new Map<string, DedupeRecord>();
+  private pruneTimer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly storePath: string) {
+  constructor(
+    private readonly storePath: string,
+    private readonly logger?: Logger,
+  ) {
     this.load();
+  }
+
+  startPeriodicPrune(): void {
+    this.prune();
+    this.pruneTimer = setInterval(() => this.prune(), PRUNE_INTERVAL_MS);
+  }
+
+  stopPeriodicPrune(): void {
+    if (this.pruneTimer) {
+      clearInterval(this.pruneTimer);
+      this.pruneTimer = null;
+    }
+  }
+
+  prune(): void {
+    const cutoff = new Date(Date.now() - PRUNE_AGE_MS).toISOString();
+    const before = this.records.size;
+    for (const [key, record] of this.records) {
+      if (record.createdAt < cutoff) {
+        this.records.delete(key);
+      }
+    }
+    const removed = before - this.records.size;
+    if (removed > 0) {
+      this.persist();
+      this.logger?.info({ removed, remaining: this.records.size }, 'Dedupe store pruned old records');
+    }
   }
 
   computeHash(base64Data: string): string {
