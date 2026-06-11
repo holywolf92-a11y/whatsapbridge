@@ -1,33 +1,30 @@
-import qrcode from 'qrcode-terminal';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
+import pino from 'pino';
+import qrcode from 'qrcode-terminal';
+import makeWASocket, {
+  useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
+  fetchLatestBaileysVersion,
+  downloadMediaMessage,
+  normalizeMessageContent,
+  Browsers,
+  DisconnectReason,
+  type WASocket,
+  type WAMessage,
+  type WAMessageContent,
+  type ConnectionState,
+} from '@whiskeysockets/baileys';
 import type { Logger } from 'pino';
-import { Client, RemoteAuth } from 'whatsapp-web.js';
-import type { BridgeAccountConfig, ManagedSession, SessionStatus } from '../types';
+import type {
+  BridgeAccountConfig,
+  BridgeClient,
+  BridgeInboundMessage,
+  BridgeMedia,
+  SessionStatus,
+} from '../types';
 import { MessageHandler } from '../handlers/messageHandler';
 import { AccountControlService } from './accountControlService';
-import { VolumeSessionStore } from './volumeSessionStore';
-
-/**
- * SafeRemoteAuth wraps every backup-timer call in a try/catch so a missing
- * Chrome "Default" directory (ENOENT) cannot bubble up as an unhandled
- * rejection and crash the process — taking ALL sessions down with it.
- */
-class SafeRemoteAuth extends RemoteAuth {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async storeRemoteSession(options?: any): Promise<void> {
-    try {
-      // storeRemoteSession is defined in the JS base class but not in the TS types;
-      // access it via the prototype to satisfy the TypeScript compiler.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const parentFn = (RemoteAuth.prototype as any).storeRemoteSession as (opts?: any) => Promise<void>;
-      await parentFn.call(this, options);
-    } catch {
-      // Non-fatal: backup silently skipped; will retry at next interval.
-    }
-  }
-}
 
 type SessionSnapshot = {
   accountId: string;
@@ -42,30 +39,83 @@ type SessionSnapshot = {
   pairingCodeGeneratedAt: string | null;
 };
 
-const MAX_FAST_RECONNECT_ATTEMPTS = 10;  // first N attempts: short delay
+interface BaileysSession {
+  account: BridgeAccountConfig;
+  sock: WASocket | null;
+  client: BridgeClient;
+  status: SessionStatus;
+  lastEventAt: string | null;
+  lastError: string | null;
+  qrCode: string | null;
+  pairingCode: string | null;
+  pairingCodeGeneratedAt: string | null;
+}
+
+const MAX_FAST_RECONNECT_ATTEMPTS = 10;          // first N attempts: short delay
 const MAX_QR_ROTATIONS = 10;
-const ACCOUNT_START_STAGGER_MS = 15000;
-const RECONNECT_DELAY_MS = 15000;            // 15s for first 10 attempts
-const RECONNECT_LONG_DELAY_MS = 10 * 60 * 1000; // 10 min after that — retry forever
+const ACCOUNT_START_STAGGER_MS = 3000;           // light stagger so we don't hit WA all at once
+const RECONNECT_DELAY_MS = 15000;                // 15s for first 10 attempts
+const RECONNECT_LONG_DELAY_MS = 10 * 60 * 1000;  // 10 min after that — retry forever
+const CONNECTING_STUCK_MS = 5 * 60 * 1000;       // 5 min in 'connecting' → force restart
+const PAIRING_WS_WARMUP_MS = 3000;               // let the socket open before requesting a pairing code
 
-const INIT_TIMEOUT_MS = 3 * 60 * 1000;         // 3 min before initialize() is declared hung
-const CONNECTING_STUCK_MS = 5 * 60 * 1000;     // 5 min in 'connecting' → force restart
-const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;   // check live connectivity every 5 min
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Normalise a destination value (phone number or JID) to a Baileys user JID. */
+function normalizeJid(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.endsWith('@g.us') || trimmed.endsWith('@s.whatsapp.net') || trimmed.endsWith('@newsletter')) {
+    return trimmed;
+  }
+  const user = (trimmed.includes('@') ? trimmed.split('@')[0] : trimmed).replace(/\D/g, '');
+  return `${user}@s.whatsapp.net`;
+}
+
+/** Baileys messageTimestamp may be number | Long | undefined → unix seconds. */
+function coerceTimestamp(value: WAMessage['messageTimestamp']): number {
+  if (typeof value === 'number') return value;
+  if (value && typeof (value as { toNumber?: () => number }).toNumber === 'function') {
+    return (value as { toNumber: () => number }).toNumber();
+  }
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : Math.floor(Date.now() / 1000);
+}
+
+function extractBody(content: WAMessageContent | null | undefined): string {
+  if (!content) return '';
+  return (
+    content.conversation ||
+    content.extendedTextMessage?.text ||
+    content.documentMessage?.caption ||
+    content.imageMessage?.caption ||
+    content.videoMessage?.caption ||
+    ''
+  );
+}
+
+/**
+ * SessionManager — Baileys transport.
+ *
+ * Replaces the previous whatsapp-web.js / headless-Chrome implementation. Each
+ * account is a lightweight WebSocket session (no browser), so RAM per account
+ * drops from ~1 GB+ to a few tens of MB and the persistent volume only holds
+ * small JSON auth files (no Chrome profile/cache that fills the disk).
+ *
+ * The public surface (start/snapshot/getQrCode/requestPairingCode/connectAccount/
+ * forceRestartAccount/cancelSession/shutdown) is unchanged so the HTTP server and
+ * the existing scan UI keep working exactly as before.
+ */
 export class SessionManager {
-  private readonly sessions = new Map<string, ManagedSession>();
+  private readonly sessions = new Map<string, BaileysSession>();
   private readonly reconnectTimers = new Map<string, NodeJS.Timeout>();
   private readonly reconnectingAccounts = new Set<string>();
   private readonly reconnectAttempts = new Map<string, number>();
   private readonly qrRotationCounts = new Map<string, number>();
   private isShuttingDown = false;
-  private readonly store: VolumeSessionStore;
   private watchdogTimer: NodeJS.Timeout | null = null;
-  private heartbeatTimer: NodeJS.Timeout | null = null;
-  private periodicRestartTimer: NodeJS.Timeout | null = null;
-  // Chrome profiles live in /tmp (ephemeral). Only the small auth zip backups
-  // are kept on the Railway persistent volume.
-  private readonly chromeTmpPath = path.join(os.tmpdir(), 'wwebjs-sessions');
+  private readonly baileysRoot: string;
+  // Baileys is far less chatty than wwebjs; keep its internal logging quiet.
+  private readonly baileysLogger = pino({ level: process.env.BAILEYS_LOG_LEVEL ?? 'error' });
 
   constructor(
     private readonly sessionDataPath: string,
@@ -74,201 +124,347 @@ export class SessionManager {
     private readonly accountControlService: AccountControlService,
     private readonly logger: Logger,
   ) {
-    // Session backups live in a sub-folder of the Railway volume so they
-    // survive container restarts without lock-file conflicts.
-    this.store = new VolumeSessionStore(path.join(sessionDataPath, 'backups'));
+    // Multi-file auth state lives under the Railway volume; tiny JSON files only.
+    this.baileysRoot = path.join(sessionDataPath, 'baileys');
+    fs.mkdirSync(this.baileysRoot, { recursive: true });
   }
 
   async start(): Promise<void> {
+    const enabledAccounts = this.accounts.filter((a) => a.enabled);
+
     for (const account of this.accounts) {
-      if (!account.enabled) {
-        this.sessions.set(account.id, {
-          account,
-          client: {} as Client,
-          status: 'paused',
-          lastEventAt: new Date().toISOString(),
-          lastError: null,
-          qrCode: null,
-          pairingCode: null,
-          pairingCodeGeneratedAt: null,
-        });
-        continue;
-      }
+      this.seedSession(account, account.enabled ? 'idle' : 'paused');
 
-      // Seed session as idle first so snapshot() is valid immediately.
-      this.sessions.set(account.id, {
-        account,
-        client: {} as Client,
-        status: 'idle',
-        lastEventAt: new Date().toISOString(),
-        lastError: null,
-        qrCode: null,
-        pairingCode: null,
-        pairingCodeGeneratedAt: null,
-      });
+      if (!account.enabled) continue;
 
-      // Auto-connect only if we have a stored backup zip for this account.
-      // Accounts never QR-scanned have no backup and stay idle until the user
-      // manually clicks Connect and scans a QR code.
-      const hasSavedSession = this.store.hasBackup(account.id);
-      if (!hasSavedSession) continue;
+      // Auto-connect only accounts that already have stored credentials.
+      // Never-linked accounts stay idle until the user clicks Connect and scans.
+      if (!this.hasCreds(account.id)) continue;
 
-      // Stagger starts so Chromium instances don't all compete for RAM at once.
-      const enabledAccounts = this.accounts.filter(a => a.enabled);
       const index = enabledAccounts.indexOf(account);
       setTimeout(() => {
         void this.createClient(account);
       }, index * ACCOUNT_START_STAGGER_MS);
     }
 
-    // Watchdog: every 2 minutes verify every enabled, non-idle session is
-    // alive and re-connect anything that slipped to degraded/disconnected
-    // without triggering the normal reconnect path (e.g. silent process hang).
+    // Watchdog: revive degraded/idle-with-creds sessions and unstick hangs.
     this.watchdogTimer = setInterval(() => {
       void this.runWatchdog();
     }, 2 * 60 * 1000);
-
-    // One-time migration: delete old Chrome profile dirs that were previously
-    // written directly to the Railway volume. They can be gigabytes in size.
-    this.cleanupOldVolumeProfileDirs();
-
-    // Volume housekeeping: purge Chrome cache subdirs every 6 hours so the
-    // Railway volume doesn't fill up with stale browser cache data.
-    this.purgeChromeCache();
-    setInterval(() => { this.purgeChromeCache(); }, 6 * 60 * 60 * 1000);
-
-    // Ephemeral storage housekeeping: restart each connected Chrome session
-    // every 8 hours. Chrome accumulates deleted-but-held-open temp FDs over
-    // time; restarting the process flushes them before Railway hits its limit.
-    // Sessions are staggered 60s apart to avoid simultaneous reconnects.
-    this.periodicRestartTimer = setInterval(() => {
-      void this.periodicSessionRestart();
-    }, 8 * 60 * 60 * 1000);
-
-    // Heartbeat: every 5 minutes verify each session that claims to be
-    // connected actually is. WhatsApp Web can silently drop without firing
-    // a 'disconnected' event (network partition, browser freeze, etc.).
-    this.heartbeatTimer = setInterval(() => {
-      void this.runHeartbeat();
-    }, HEARTBEAT_INTERVAL_MS);
   }
 
-  private async periodicSessionRestart(): Promise<void> {
-    const connectedIds = Array.from(this.sessions.entries())
-      .filter(([, s]) => s.status === 'connected')
-      .map(([id]) => id);
+  private seedSession(account: BridgeAccountConfig, status: SessionStatus): BaileysSession {
+    const existing = this.sessions.get(account.id);
+    if (existing) return existing;
+    const session: BaileysSession = {
+      account,
+      sock: null,
+      client: { sendMessage: async () => ({ id: { _serialized: '' } }) },
+      status,
+      lastEventAt: new Date().toISOString(),
+      lastError: null,
+      qrCode: null,
+      pairingCode: null,
+      pairingCodeGeneratedAt: null,
+    };
+    this.sessions.set(account.id, session);
+    return session;
+  }
 
-    for (let i = 0; i < connectedIds.length; i++) {
-      setTimeout(() => {
-        this.logger.info({ accountId: connectedIds[i] }, 'Periodic Chrome restart to flush ephemeral storage');
-        void this.forceRestartAccount(connectedIds[i]).catch((err) => {
-          this.logger.warn({ accountId: connectedIds[i], err }, 'Periodic restart failed — watchdog will recover');
+  private authDir(accountId: string): string {
+    return path.join(this.baileysRoot, accountId);
+  }
+
+  private hasCreds(accountId: string): boolean {
+    try {
+      return fs.existsSync(path.join(this.authDir(accountId), 'creds.json'));
+    } catch {
+      return false;
+    }
+  }
+
+  private buildClient(sock: WASocket): BridgeClient {
+    return {
+      sendMessage: async (chatId, media, options) => {
+        const jid = normalizeJid(chatId);
+        const buffer = Buffer.from(media.data, 'base64');
+        const sent = await sock.sendMessage(jid, {
+          document: buffer,
+          mimetype: media.mimetype || 'application/octet-stream',
+          fileName: media.filename || 'document',
+          caption: options?.caption,
         });
-      }, i * 60_000);
+        return { id: { _serialized: sent?.key?.id ?? '' } };
+      },
+    };
+  }
+
+  private async createClient(account: BridgeAccountConfig): Promise<void> {
+    // Tear down any existing socket first so repeated connect/pairing/reconnect
+    // calls can never leak an orphaned WebSocket or its event listeners.
+    const previous = this.sessions.get(account.id);
+    if (previous?.sock) {
+      try { previous.sock.end(undefined); } catch { /* ignore */ }
+      previous.sock = null;
+    }
+
+    const authDir = this.authDir(account.id);
+    fs.mkdirSync(authDir, { recursive: true });
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+
+    let version: [number, number, number] | undefined;
+    try {
+      ({ version } = await fetchLatestBaileysVersion());
+    } catch {
+      // Offline / fetch failed — fall back to the version bundled with Baileys.
+    }
+
+    const sock = makeWASocket({
+      version,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, this.baileysLogger),
+      },
+      logger: this.baileysLogger,
+      printQRInTerminal: false,
+      markOnlineOnConnect: false,
+      syncFullHistory: false,
+      browser: Browsers.ubuntu('Chrome'),
+      generateHighQualityLinkPreview: false,
+    });
+
+    const session = this.seedSession(account, 'connecting');
+    session.sock = sock;
+    session.client = this.buildClient(sock);
+    session.status = 'connecting';
+    session.lastEventAt = new Date().toISOString();
+    session.lastError = null;
+
+    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('connection.update', (update) => {
+      void this.onConnectionUpdate(account, update);
+    });
+    sock.ev.on('messages.upsert', (event) => {
+      void this.onMessagesUpsert(account, sock, event);
+    });
+  }
+
+  private async onConnectionUpdate(
+    account: BridgeAccountConfig,
+    update: Partial<ConnectionState>,
+  ): Promise<void> {
+    const session = this.sessions.get(account.id);
+    if (!session) return;
+
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      const rotations = (this.qrRotationCounts.get(account.id) ?? 0) + 1;
+      this.qrRotationCounts.set(account.id, rotations);
+
+      if (rotations > MAX_QR_ROTATIONS) {
+        this.logger.warn({ accountId: account.id, rotations }, `QR rotated ${MAX_QR_ROTATIONS} times with no scan — cancelling session`);
+        await this.cancelSession(account.id);
+        return;
+      }
+
+      session.status = 'needs_qr';
+      session.qrCode = qr;
+      session.pairingCode = null;
+      session.pairingCodeGeneratedAt = null;
+      session.lastEventAt = new Date().toISOString();
+      try { qrcode.generate(qr, { small: true }); } catch { /* terminal QR is best-effort */ }
+      this.logger.info({ accountId: account.id, rotation: rotations, max: MAX_QR_ROTATIONS }, 'QR code generated for WhatsApp login');
+    }
+
+    if (connection === 'connecting' && session.status !== 'needs_qr') {
+      session.status = 'connecting';
+      session.lastEventAt = new Date().toISOString();
+    }
+
+    if (connection === 'open') {
+      this.clearReconnect(account.id);
+      this.reconnectAttempts.delete(account.id);
+      this.qrRotationCounts.delete(account.id);
+      session.status = 'connected';
+      session.qrCode = null;
+      session.pairingCode = null;
+      session.pairingCodeGeneratedAt = null;
+      session.lastError = null;
+      session.lastEventAt = new Date().toISOString();
+      this.logger.info({ accountId: account.id }, 'WhatsApp session ready');
+    }
+
+    if (connection === 'close') {
+      const statusCode = (lastDisconnect?.error as { output?: { statusCode?: number } } | undefined)?.output?.statusCode;
+      session.lastEventAt = new Date().toISOString();
+
+      if (statusCode === DisconnectReason.loggedOut) {
+        // Credentials were invalidated (unlinked on the phone). Clear auth and
+        // go idle — the user must scan a fresh QR. Do NOT keep reconnecting.
+        this.logger.warn({ accountId: account.id }, 'WhatsApp logged out — clearing auth, awaiting fresh QR scan');
+        await this.resetPersistedAuth(account.id);
+        session.sock = null;
+        session.status = 'idle';
+        session.qrCode = null;
+        session.pairingCode = null;
+        session.pairingCodeGeneratedAt = null;
+        session.lastError = 'Logged out on phone. Click Connect and scan the QR again.';
+        return;
+      }
+
+      if (statusCode === DisconnectReason.restartRequired) {
+        // Normal handshake step right after a scan/pair — reconnect immediately.
+        this.logger.info({ accountId: account.id }, 'Restart required after login — reconnecting immediately');
+        session.status = 'connecting';
+        void this.reconnectSession(account.id);
+        return;
+      }
+
+      session.status = 'degraded';
+      session.lastError = `Connection closed (code: ${statusCode ?? 'unknown'})`;
+      this.logger.warn({ accountId: account.id, statusCode }, 'WhatsApp session disconnected');
+      this.scheduleReconnect(account.id);
     }
   }
 
-  /**
-   * Heartbeat: verify every session that reports 'connected' is actually alive
-   * by querying the WhatsApp Web page state directly. Detects silent drops that
-   * never emit a 'disconnected' event (network partitions, browser freezes).
-   */
-  private async runHeartbeat(): Promise<void> {
-    if (this.isShuttingDown) return;
-    for (const session of this.sessions.values()) {
-      const { id } = session.account;
-      if (
-        session.status !== 'connected' ||
-        this.reconnectingAccounts.has(id) ||
-        this.reconnectTimers.has(id)
-      ) continue;
+  private async onMessagesUpsert(
+    account: BridgeAccountConfig,
+    sock: WASocket,
+    event: { messages: WAMessage[]; type: string },
+  ): Promise<void> {
+    // 'notify' = newly received realtime messages. Ignore history/append syncs.
+    if (event.type !== 'notify') return;
 
+    const session = this.sessions.get(account.id);
+    if (!session) return;
+
+    for (const raw of event.messages) {
       try {
-        const state = await session.client.getState();
-        if (state !== 'CONNECTED') {
-          this.logger.warn({ accountId: id, state }, 'Heartbeat: non-CONNECTED state detected — reconnecting');
-          session.status = 'degraded';
-          session.lastEventAt = new Date().toISOString();
-          session.lastError = `Heartbeat detected state: ${state ?? 'null'}`;
-          this.scheduleReconnect(id);
+        if (!raw.message) continue;
+        const remoteJid = raw.key.remoteJid;
+        if (!remoteJid || remoteJid === 'status@broadcast') continue;
+        if (raw.key.fromMe) continue;
+
+        if (this.accountControlService.isPaused(account.id)) {
+          session.status = 'paused';
+          this.logger.info({ accountId: account.id, messageId: raw.key.id }, 'Skipped message because account is paused');
+          continue;
         }
-      } catch (err) {
-        this.logger.warn({ accountId: id, err }, 'Heartbeat: getState() threw — Chrome may be dead, reconnecting');
-        session.status = 'degraded';
-        session.lastEventAt = new Date().toISOString();
-        session.lastError = 'Heartbeat check failed — Chrome unresponsive';
-        this.scheduleReconnect(id);
+
+        const message = this.adaptMessage(sock, raw, remoteJid);
+        await this.messageHandler.handle(account, session.client, message);
+        if (session.status === 'paused') session.status = 'connected';
+      } catch (error) {
+        // A processing error is not a connection failure — log and keep going.
+        this.logger.error({ accountId: account.id, messageId: raw.key.id, error: error instanceof Error ? error.message : String(error) }, 'Failed to process inbound message');
       }
     }
   }
 
-  /**
-   * Delete old RemoteAuth-* Chrome profile directories that were previously
-   * written directly to the Railway volume before the /tmp migration.
-   */
-  private cleanupOldVolumeProfileDirs(): void {
-    for (const account of this.accounts) {
-      const oldProfileDir = path.join(this.sessionDataPath, `RemoteAuth-${account.id}`);
-      const oldZip = path.join(this.sessionDataPath, `RemoteAuth-${account.id}.zip`);
-      try {
-        if (fs.existsSync(oldProfileDir)) {
-          fs.rmSync(oldProfileDir, { recursive: true, force: true });
-          this.logger.info({ accountId: account.id }, 'Cleaned up old Chrome profile dir from Railway volume');
-        }
-      } catch { /* non-fatal */ }
-      try {
-        if (fs.existsSync(oldZip)) {
-          fs.rmSync(oldZip, { force: true });
-          this.logger.info({ accountId: account.id }, 'Cleaned up old session zip from Railway volume root');
-        }
-      } catch { /* non-fatal */ }
-    }
-  }
+  /** Adapt a raw Baileys message into the transport-agnostic shape handlers expect. */
+  private adaptMessage(sock: WASocket, raw: WAMessage, remoteJid: string): BridgeInboundMessage {
+    const content = normalizeMessageContent(raw.message);
+    const docNode = content?.documentMessage;
+    const imgNode = content?.imageMessage;
+    const vidNode = content?.videoMessage;
+    const mediaNode = docNode ?? imgNode ?? vidNode ?? null;
 
-  /**
-   * Delete Chrome cache subdirs from the /tmp Chrome profiles.
-   * These are regenerated by Chrome on next launch.
-   */
-  private purgeChromeCache(): void {
-    const CACHE_SUBDIRS = ['Cache', 'Code Cache', 'GPUCache', 'blob_storage', 'DawnWebGPUCache'];
-    for (const account of this.accounts) {
-      if (!account.enabled) continue;
-      const profileRoot = path.join(this.chromeTmpPath, `RemoteAuth-${account.id}`, 'Default');
-      for (const sub of CACHE_SUBDIRS) {
-        const target = path.join(profileRoot, sub);
-        try {
-          if (fs.existsSync(target)) {
-            fs.rmSync(target, { recursive: true, force: true });
-          }
-        } catch { /* non-fatal */ }
-      }
-    }
+    const serialized = `${raw.key.fromMe ? 'true' : 'false'}_${remoteJid}_${raw.key.id ?? ''}`;
+    const logger = this.baileysLogger;
+
+    return {
+      id: { _serialized: serialized },
+      from: remoteJid,
+      body: extractBody(content),
+      fromMe: Boolean(raw.key.fromMe),
+      hasMedia: Boolean(mediaNode),
+      timestamp: coerceTimestamp(raw.messageTimestamp),
+      downloadMedia: async (): Promise<BridgeMedia | null> => {
+        if (!mediaNode) return null;
+        // Pass the normalised content so wrapped (caption/ephemeral) docs download cleanly.
+        const dlMessage = { key: raw.key, message: content } as WAMessage;
+        const buffer = (await downloadMediaMessage(
+          dlMessage,
+          'buffer',
+          {},
+          { logger, reuploadRequest: sock.updateMediaMessage },
+        )) as Buffer;
+        if (!buffer || buffer.length === 0) return null;
+        return {
+          data: buffer.toString('base64'),
+          mimetype: String(mediaNode.mimetype ?? 'application/octet-stream'),
+          filename: docNode?.fileName ?? undefined,
+        };
+      },
+      reply: async (text: string): Promise<unknown> => {
+        return sock.sendMessage(remoteJid, { text }, { quoted: raw });
+      },
+    };
   }
 
   async connectAccount(accountId: string): Promise<void> {
     const existing = this.sessions.get(accountId);
-    // Only block if fully connected — if stuck in connecting, forceRestart handles it
-    if (existing?.status === 'connected') {
-      return;
-    }
+    if (existing?.status === 'connected') return;
 
     const account = this.accounts.find((a) => a.id === accountId);
-    if (!account) {
-      throw new Error(`Unknown account: ${accountId}`);
+    if (!account) throw new Error(`Unknown account: ${accountId}`);
+    if (!account.enabled) throw new Error(`Account is disabled: ${accountId}`);
+
+    await this.createClient(account);
+  }
+
+  async requestPairingCode(accountId: string, phoneNumber: string): Promise<{ accountId: string; pairingCode: string; generatedAt: string }> {
+    const account = this.accounts.find((a) => a.id === accountId);
+    if (!account) throw new Error(`Unknown account: ${accountId}`);
+    if (!account.enabled) throw new Error(`Account is disabled: ${accountId}`);
+
+    const existing = this.sessions.get(accountId);
+    if (existing?.status === 'connected') {
+      throw new Error(`Session is already connected for account: ${accountId}`);
     }
 
-    if (!account.enabled) {
-      throw new Error(`Account is disabled: ${accountId}`);
+    const normalizedPhoneNumber = phoneNumber.replace(/\D/g, '');
+    if (!normalizedPhoneNumber) {
+      throw new Error('Phone number is required');
     }
 
-    const shouldResetPersistedAuth =
-      existing?.status === 'degraded' &&
-      typeof existing.lastError === 'string' &&
-      existing.lastError.toLowerCase().includes('initialisation failed');
-
-    if (shouldResetPersistedAuth) {
-      await this.resetPersistedAuth(accountId);
+    // Start a fresh socket, let its WebSocket warm up, then request the code.
+    await this.createClient(account);
+    const session = this.sessions.get(accountId);
+    const sock = session?.sock;
+    if (!session || !sock) {
+      throw new Error(`Failed to start session for pairing: ${accountId}`);
     }
+    if (sock.authState.creds.registered) {
+      throw new Error(`Session is already registered for account: ${accountId}`);
+    }
+
+    await sleep(PAIRING_WS_WARMUP_MS);
+    const pairingCode = await sock.requestPairingCode(normalizedPhoneNumber);
+    const generatedAt = new Date().toISOString();
+    session.status = 'needs_qr';
+    session.lastEventAt = generatedAt;
+    session.lastError = null;
+    session.qrCode = null;
+    session.pairingCode = pairingCode;
+    session.pairingCodeGeneratedAt = generatedAt;
+
+    this.logger.info({ accountId, normalizedPhoneNumber }, 'Pairing code requested for WhatsApp login');
+    return { accountId, pairingCode, generatedAt };
+  }
+
+  async forceRestartAccount(accountId: string): Promise<void> {
+    const existing = this.sessions.get(accountId);
+    if (existing?.sock) {
+      try { existing.sock.end(undefined); } catch { /* ignore */ }
+      existing.sock = null;
+    }
+    this.clearReconnect(accountId);
+
+    const account = this.accounts.find((a) => a.id === accountId);
+    if (!account) throw new Error(`Unknown account: ${accountId}`);
+    if (!account.enabled) throw new Error(`Account is disabled: ${accountId}`);
 
     await this.createClient(account);
   }
@@ -281,8 +477,9 @@ export class SessionManager {
 
     const session = this.sessions.get(accountId);
     if (session) {
-      if (session.client && typeof session.client.destroy === 'function') {
-        try { await session.client.destroy(); } catch { /* ignore */ }
+      if (session.sock) {
+        try { session.sock.end(undefined); } catch { /* ignore */ }
+        session.sock = null;
       }
       session.status = 'idle';
       session.lastEventAt = new Date().toISOString();
@@ -294,19 +491,24 @@ export class SessionManager {
     this.logger.info({ accountId }, 'WhatsApp session cancelled — returned to idle');
   }
 
-  async forceRestartAccount(accountId: string): Promise<void> {
-    const existing = this.sessions.get(accountId);
-    if (existing?.client && typeof (existing.client as any).destroy === 'function') {
-      try { await (existing.client as any).destroy(); } catch { /* ignore */ }
-    }
-    this.sessions.delete(accountId);
+  private async resetPersistedAuth(accountId: string): Promise<void> {
     this.clearReconnect(accountId);
+    this.reconnectingAccounts.delete(accountId);
+    this.reconnectAttempts.delete(accountId);
+    this.qrRotationCounts.delete(accountId);
 
-    const account = this.accounts.find((a) => a.id === accountId);
-    if (!account) throw new Error(`Unknown account: ${accountId}`);
-    if (!account.enabled) throw new Error(`Account is disabled: ${accountId}`);
+    const session = this.sessions.get(accountId);
+    if (session?.sock) {
+      try { session.sock.end(undefined); } catch { /* ignore */ }
+      session.sock = null;
+    }
 
-    await this.createClient(account);
+    try {
+      fs.rmSync(this.authDir(accountId), { recursive: true, force: true });
+    } catch {
+      // already gone
+    }
+    this.logger.warn({ accountId }, 'Cleared persisted WhatsApp auth state before requesting a fresh QR');
   }
 
   snapshot(): SessionSnapshot[] {
@@ -328,120 +530,30 @@ export class SessionManager {
     return this.sessions.get(accountId)?.qrCode ?? null;
   }
 
-  async requestPairingCode(accountId: string, phoneNumber: string): Promise<{ accountId: string; pairingCode: string; generatedAt: string }> {
-    const session = this.sessions.get(accountId);
-    if (!session) {
-      throw new Error(`Unknown account: ${accountId}`);
-    }
-
-    if (session.status === 'connected') {
-      throw new Error(`Session is already connected for account: ${accountId}`);
-    }
-
-    const normalizedPhoneNumber = phoneNumber.replace(/\D/g, '');
-    if (!normalizedPhoneNumber) {
-      throw new Error('Phone number is required');
-    }
-
-    if (typeof session.client.requestPairingCode !== 'function') {
-      throw new Error('Pairing code is not supported by the current bridge client');
-    }
-
-    await this.ensurePairingCodeCallback(session);
-
-    const pairingCode = await session.client.requestPairingCode(normalizedPhoneNumber, true);
-    const generatedAt = new Date().toISOString();
-    session.status = 'needs_qr';
-    session.lastEventAt = generatedAt;
-    session.lastError = null;
-    session.qrCode = null;
-    session.pairingCode = pairingCode;
-    session.pairingCodeGeneratedAt = generatedAt;
-
-    this.logger.info({ accountId, normalizedPhoneNumber }, 'Pairing code requested for WhatsApp login');
-
-    return {
-      accountId,
-      pairingCode,
-      generatedAt,
-    };
-  }
-
-  private async ensurePairingCodeCallback(session: ManagedSession): Promise<void> {
-    const clientWithPage = session.client as Client & {
-      pupPage?: {
-        exposeFunction: (name: string, fn: (code: string) => Promise<string>) => Promise<void>;
-        evaluate: <T>(pageFunction: (...args: unknown[]) => T | Promise<T>, ...args: unknown[]) => Promise<T>;
-      };
-    };
-
-    const page = clientWithPage.pupPage;
-    if (!page) {
-      throw new Error(`Pairing code page is not ready for account: ${session.account.id}`);
-    }
-
-    const callbackName = 'onCodeReceivedEvent';
-    const hasCallback = await page.evaluate((name) => {
-      const callback = (window as typeof window & Record<string, unknown>)[name];
-      return typeof callback === 'function';
-    }, callbackName);
-
-    if (hasCallback) {
-      return;
-    }
-
-    try {
-      await page.exposeFunction(callbackName, async (code: string) => {
-        const emitter = session.client as Client & { emit?: (event: string, value: string) => boolean };
-        emitter.emit?.('code', code);
-        return code;
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!message.includes('already exists')) {
-        throw error;
-      }
-    }
-
-    const callbackReady = await page.evaluate((name) => {
-      const callback = (window as typeof window & Record<string, unknown>)[name];
-      return typeof callback === 'function';
-    }, callbackName);
-
-    if (!callbackReady) {
-      throw new Error(`Failed to initialize pairing code callback for account: ${session.account.id}`);
-    }
-  }
-
   async shutdown(): Promise<void> {
     this.isShuttingDown = true;
     if (this.watchdogTimer) {
       clearInterval(this.watchdogTimer);
       this.watchdogTimer = null;
     }
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
-    if (this.periodicRestartTimer) {
-      clearInterval(this.periodicRestartTimer);
-      this.periodicRestartTimer = null;
-    }
     for (const timer of this.reconnectTimers.values()) {
       clearTimeout(timer);
     }
     this.reconnectTimers.clear();
 
-    const activeSessions = Array.from(this.sessions.values()).filter((session) => session.client && typeof session.client.destroy === 'function');
-    await Promise.all(activeSessions.map((session) => session.client.destroy()));
+    for (const session of this.sessions.values()) {
+      if (session.sock) {
+        try { session.sock.end(undefined); } catch { /* ignore */ }
+      }
+    }
   }
 
   /**
    * Watchdog: runs every 2 minutes.
    * - Reconnects sessions stuck in "degraded" without a scheduled retry.
-   * - Reconnects sessions in "idle" that still have a saved session backup
-   *   (e.g. after the reconnect limit was hit and cancelSession was called,
-   *   but the auth zip on the Railway volume is still valid).
+   * - Revives "idle" sessions that still have stored credentials (e.g. after a
+   *   transient cancel) so a connected number self-heals after a restart.
+   * - Force-restarts sessions wedged in "connecting".
    */
   private async runWatchdog(): Promise<void> {
     if (this.isShuttingDown) return;
@@ -457,16 +569,11 @@ export class SessionManager {
       if (session.status === 'degraded') {
         this.logger.warn({ accountId: id }, 'Watchdog detected degraded session — scheduling reconnect');
         this.scheduleReconnect(id);
-      } else if (session.status === 'idle' && this.store.hasBackup(id)) {
-        // Session was cancelled (hit reconnect limit) but the auth zip is
-        // still on the volume — try to restore it automatically.
-        this.logger.info({ accountId: id }, 'Watchdog reviving idle session that has a saved backup');
+      } else if (session.status === 'idle' && !session.sock && this.hasCreds(id)) {
+        this.logger.info({ accountId: id }, 'Watchdog reviving idle session that has stored credentials');
         this.reconnectAttempts.delete(id);
         void this.createClient(session.account);
       } else if (session.status === 'connecting' && session.lastEventAt) {
-        // Detect initialize() hanging: if we've been stuck in 'connecting' for
-        // longer than CONNECTING_STUCK_MS, the Chrome process is likely frozen.
-        // Force a restart so reconnect can make a fresh attempt.
         const stuckMs = Date.now() - new Date(session.lastEventAt).getTime();
         if (stuckMs > CONNECTING_STUCK_MS) {
           this.logger.warn({ accountId: id, stuckMs }, 'Watchdog detected session stuck in connecting — forcing restart');
@@ -477,209 +584,6 @@ export class SessionManager {
         }
       }
     }
-  }
-
-  private async resetPersistedAuth(accountId: string): Promise<void> {
-    this.clearReconnect(accountId);
-    this.reconnectingAccounts.delete(accountId);
-    this.reconnectAttempts.delete(accountId);
-    this.qrRotationCounts.delete(accountId);
-
-    const session = this.sessions.get(accountId);
-    if (session?.client && typeof session.client.destroy === 'function') {
-      try {
-        await session.client.destroy();
-      } catch {
-        // ignore cleanup errors and continue resetting persisted auth
-      }
-    }
-
-    const remoteAuthName = `RemoteAuth-${accountId}`;
-    const sessionDir = path.join(this.chromeTmpPath, remoteAuthName);
-    const sessionZip = path.join(this.chromeTmpPath, `${remoteAuthName}.zip`);
-
-    this.store.deleteBackup(accountId);
-
-    try {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-    } catch {
-      // already gone
-    }
-
-    try {
-      fs.rmSync(sessionZip, { force: true });
-    } catch {
-      // already gone
-    }
-
-    this.logger.warn({ accountId }, 'Cleared persisted WhatsApp auth state before requesting a fresh QR');
-  }
-
-  private async createClient(account: BridgeAccountConfig): Promise<void> {
-    const client = new Client({
-      authStrategy: new SafeRemoteAuth({
-        clientId: account.id,
-        // Chrome profile lives in /tmp — ephemeral, never fills the volume.
-        // Auth backup zips are written to the Railway volume via this.store.
-        dataPath: this.chromeTmpPath,
-        store: this.store,
-        // Back up the session every 5 minutes while connected.
-        backupSyncIntervalMs: 5 * 60 * 1000,
-      }),
-      puppeteer: {
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--disable-extensions',
-          '--disable-background-networking',
-          '--disable-default-apps',
-          '--disable-sync',
-          '--disable-translate',
-          '--hide-scrollbars',
-          '--metrics-recording-only',
-          '--mute-audio',
-          '--no-first-run',
-          '--safebrowsing-disable-auto-update',
-          // Prevent Chrome from filling the Railway volume with cache data.
-          '--disk-cache-size=1',
-          '--media-cache-size=1',
-          '--aggressive-cache-discard',
-          // Prevent Railway ephemeral storage exhaustion from held-open temp FDs.
-          // --no-zygote stops Chrome spawning a zygote process that creates many
-          // temp files it unlinks immediately (deleted-but-held-open pattern).
-          // --disable-crash-reporter stops crash dump files accumulating in /tmp.
-          '--no-zygote',
-          '--disable-crash-reporter',
-          '--disable-logging',
-        ],
-      },
-    });
-
-    const session: ManagedSession = {
-      account,
-      client,
-      status: 'connecting',
-      lastEventAt: new Date().toISOString(),
-      lastError: null,
-      qrCode: null,
-      pairingCode: null,
-      pairingCodeGeneratedAt: null,
-    };
-
-    this.sessions.set(account.id, session);
-    this.bindEvents(session);
-    try {
-      await Promise.race([
-        client.initialize(),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error(`Chrome initialize() timed out after ${INIT_TIMEOUT_MS / 1000}s`)),
-            INIT_TIMEOUT_MS,
-          )
-        ),
-      ]);
-    } catch (error) {
-      this.logger.error({ accountId: account.id, error }, 'Chromium initialization failed — scheduling reconnect');
-      try { await client.destroy(); } catch { /* ignore */ }
-      session.status = 'degraded';
-      session.lastEventAt = new Date().toISOString();
-      session.lastError = 'Session initialisation failed. Retrying automatically.';
-      this.scheduleReconnect(account.id);
-    }
-  }
-
-  private bindEvents(session: ManagedSession): void {
-    const updateStatus = (status: SessionStatus, error?: unknown) => {
-      session.status = status;
-      session.lastEventAt = new Date().toISOString();
-      session.lastError = error instanceof Error ? error.message : error ? String(error) : null;
-      if (status !== 'needs_qr') {
-        session.qrCode = null;
-        session.pairingCode = null;
-        session.pairingCodeGeneratedAt = null;
-      }
-    };
-
-    session.client.on('qr', (qr) => {
-      const rotations = (this.qrRotationCounts.get(session.account.id) ?? 0) + 1;
-      this.qrRotationCounts.set(session.account.id, rotations);
-
-      if (rotations > MAX_QR_ROTATIONS) {
-        this.logger.warn({ accountId: session.account.id, rotations }, `QR rotated ${MAX_QR_ROTATIONS} times with no scan — cancelling session`);
-        void this.cancelSession(session.account.id);
-        return;
-      }
-
-      updateStatus('needs_qr');
-      session.qrCode = qr;
-      session.pairingCode = null;
-      session.pairingCodeGeneratedAt = null;
-      qrcode.generate(qr, { small: true });
-      this.logger.info({ accountId: session.account.id, rotation: rotations, max: MAX_QR_ROTATIONS }, 'QR code generated for WhatsApp login');
-    });
-
-    session.client.on('code', (code) => {
-      updateStatus('needs_qr');
-      session.qrCode = null;
-      session.pairingCode = code;
-      session.pairingCodeGeneratedAt = new Date().toISOString();
-      this.logger.info({ accountId: session.account.id }, 'Pairing code generated for WhatsApp login');
-    });
-
-    session.client.on('authenticated', () => {
-      this.clearReconnect(session.account.id);
-      this.reconnectAttempts.delete(session.account.id);
-      this.qrRotationCounts.delete(session.account.id);
-      updateStatus('connecting');
-      this.logger.info({ accountId: session.account.id }, 'WhatsApp session authenticated');
-    });
-
-    session.client.on('ready', () => {
-      this.clearReconnect(session.account.id);
-      this.reconnectAttempts.delete(session.account.id);
-      this.qrRotationCounts.delete(session.account.id);
-      updateStatus('connected');
-      this.logger.info({ accountId: session.account.id }, 'WhatsApp session ready');
-    });
-
-    session.client.on('auth_failure', (message) => {
-      updateStatus('degraded', message);
-      this.logger.error({ accountId: session.account.id, message }, 'WhatsApp authentication failure');
-      this.scheduleReconnect(session.account.id);
-    });
-
-    session.client.on('disconnected', (reason) => {
-      updateStatus('degraded', reason);
-      this.logger.warn({ accountId: session.account.id, reason }, 'WhatsApp session disconnected');
-      this.scheduleReconnect(session.account.id);
-    });
-
-    session.client.on('message', async (message) => {
-      // Drop WhatsApp Status updates (status@broadcast) immediately — they are
-      // not real messages and flood the event loop at hundreds per second.
-      if (message.from === 'status@broadcast') return;
-
-      try {
-        if (this.accountControlService.isPaused(session.account.id)) {
-          updateStatus('paused');
-          this.logger.info({ accountId: session.account.id, messageId: message.id._serialized }, 'Skipped message because account is paused');
-          return;
-        }
-
-        await this.messageHandler.handle(session.account, session.client, message);
-        if (session.status === 'paused') {
-          updateStatus('connected');
-        }
-      } catch (error) {
-        // A processing error is not a connection failure — don't mark the session
-        // degraded. Log it and keep going; the heartbeat and 'disconnected' event
-        // handle actual connection drops.
-        this.logger.error({ accountId: session.account.id, messageId: message.id._serialized, error }, 'Failed to process inbound message');
-      }
-    });
   }
 
   private clearReconnect(accountId: string): void {
@@ -703,10 +607,8 @@ export class SessionManager {
     const attempts = (this.reconnectAttempts.get(accountId) ?? 0) + 1;
     this.reconnectAttempts.set(accountId, attempts);
 
-    // First MAX_FAST_RECONNECT_ATTEMPTS: retry quickly every 15s.
-    // After that: switch to a long delay (10 min) and keep retrying forever.
-    // We never permanently cancel — WhatsApp may accept the session again
-    // after a backoff, and Railway restarts should always be recoverable.
+    // First N attempts retry quickly; after that switch to a long delay and
+    // keep retrying forever — WhatsApp may accept the session again later.
     const delay = attempts <= MAX_FAST_RECONNECT_ATTEMPTS ? RECONNECT_DELAY_MS : RECONNECT_LONG_DELAY_MS;
 
     const timer = setTimeout(() => {
@@ -730,13 +632,18 @@ export class SessionManager {
     }
 
     this.reconnectingAccounts.add(accountId);
-
     try {
-      if (session.client && typeof session.client.destroy === 'function') {
-        await session.client.destroy().catch(() => undefined);
+      if (session.sock) {
+        try { session.sock.end(undefined); } catch { /* ignore */ }
+        session.sock = null;
       }
 
-      await this.createClient(session.account);
+      const account = this.accounts.find((a) => a.id === accountId);
+      if (!account || !account.enabled || this.accountControlService.isPaused(accountId)) {
+        return;
+      }
+
+      await this.createClient(account);
       this.logger.info({ accountId }, 'Reinitialized WhatsApp session');
     } catch (error) {
       session.status = 'degraded';

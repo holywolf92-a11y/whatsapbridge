@@ -13,5 +13,9 @@
     "lib": ["ES2022", "DOM"],
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "src/scripts/backfillPdfHistory.ts",
+    "src/services/volumeSessionStore.ts"
+  ]
 }

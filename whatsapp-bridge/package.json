@@ -1,8 +1,8 @@
 {
   "name": "falisha-whatsapp-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Controlled WhatsApp bridge for Falisha CV ingestion",
+  "description": "Controlled WhatsApp bridge for Falisha CV ingestion (Baileys transport — no browser)",
   "main": "dist/index.js",
   "engines": {
     "node": ">=20.0.0"
@@ -19,11 +19,11 @@
     "backfill:pdf": "tsx src/scripts/backfillPdfHistory.ts"
   },
   "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
     "dotenv": "^16.4.5",
     "pino": "^9.7.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.34.1",
     "zod": "^3.24.2"
   },
   "devDependencies": {
@@ -31,6 +31,7 @@
     "@types/qrcode": "^1.5.5",
     "@types/qrcode-terminal": "^0.12.2",
     "tsx": "^4.19.3",
-    "typescript": "^5.8.2"
+    "typescript": "^5.8.2",
+    "whatsapp-web.js": "^1.34.1"
   }
 }

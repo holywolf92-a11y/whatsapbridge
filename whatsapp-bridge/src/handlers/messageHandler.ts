@@ -1,6 +1,5 @@
 import type { Logger } from 'pino';
-import type { Client, Message } from 'whatsapp-web.js';
-import type { BridgeAccountConfig } from '../types';
+import type { BridgeAccountConfig, BridgeClient, BridgeInboundMessage } from '../types';
 import { MediaHandler } from './mediaHandler';
 
 function isInboxChatId(chatId: string | undefined): boolean {
@@ -19,7 +18,7 @@ export class MessageHandler {
     private readonly logger: Logger,
   ) {}
 
-  async handle(account: BridgeAccountConfig, client: Client, message: Message): Promise<void> {
+  async handle(account: BridgeAccountConfig, client: BridgeClient, message: BridgeInboundMessage): Promise<void> {
     if (message.fromMe) {
       return;
     }

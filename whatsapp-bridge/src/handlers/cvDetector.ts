@@ -1,13 +1,12 @@
 import path from 'path';
-import type { Message, MessageMedia } from 'whatsapp-web.js';
-import type { BridgeConfig, DetectionResult } from '../types';
+import type { BridgeConfig, BridgeInboundMessage, BridgeMedia, DetectionResult } from '../types';
 
 const KEYWORDS = ['cv', 'resume', 'biodata', 'curriculum', 'vitae'];
 const DOCUMENT_EXTENSIONS = new Set(['.pdf', '.doc', '.docx']);
 
 export function classifyMedia(
-  media: MessageMedia,
-  message: Message,
+  media: BridgeMedia,
+  message: BridgeInboundMessage,
   config: BridgeConfig,
 ): DetectionResult {
   const fileName = String(media.filename ?? '');

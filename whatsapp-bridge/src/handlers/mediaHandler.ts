@@ -1,6 +1,5 @@
 import type { Logger } from 'pino';
-import type { Client, Message } from 'whatsapp-web.js';
-import type { BridgeAccountConfig, BridgeConfig } from '../types';
+import type { BridgeAccountConfig, BridgeClient, BridgeConfig, BridgeInboundMessage } from '../types';
 import { classifyMedia } from './cvDetector';
 import { retry } from '../utils/retry';
 import { FileBackedDedupeService } from '../services/dedupeService';
@@ -19,7 +18,7 @@ export class MediaHandler {
     private readonly logger: Logger,
   ) {}
 
-  async handle(account: BridgeAccountConfig, client: Client, message: Message): Promise<void> {
+  async handle(account: BridgeAccountConfig, client: BridgeClient, message: BridgeInboundMessage): Promise<void> {
     const messageDecision = this.dedupeService.registerMessage({
       accountId: account.id,
       messageId: message.id._serialized,
